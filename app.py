@@ -332,6 +332,7 @@ class TradeReviewApp(tk.Tk):
 
 
 if __name__ == "__main__":
+
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     app = TradeReviewApp()
     app.mainloop()
