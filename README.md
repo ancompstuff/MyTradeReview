@@ -1,377 +1,286 @@
-# MyTradeReview
+# MyTradeReview / My Trading Journal — OneNote edition
 
-A reusable PyCharm/Tkinter application for reviewing day trades against 1-minute WINFUT and WDOFUT market data.
+This version turns the existing Profit trade-review program into a persistent trading journal with optional Microsoft OneNote export.
 
-The purpose of the program is not simply to label trades as winners or losers. It is designed to make each trade easy to inspect in its market context so you can distinguish entry problems, stop/management problems, exit problems, and possible overtrading/re-entry behaviour.
+## What the journal does
 
-## Main features
+The desktop Python app remains the master data/analysis tool. It:
 
-### Trade table
+- imports Profit operations/trades CSV files;
+- imports WINFUT 1-minute CSV files;
+- imports WDOFUT 1-minute CSV files;
+- merges later exports into persistent master files without duplicating already-imported trades or 1-minute bars;
+- keeps process grades, setup labels, mistake tags and notes;
+- opens the existing trade chart with RSI/IFR, volume, MA9, MA20, MA80, daily VWAP, current-session high/low, previous-session high/low, entry/exit and confirmed MFE/MAE;
+- can export/update the journal in OneNote.
 
-The main window reads the Profit operations export and shows all completed trades in a sortable/filterable table, including:
+The normal recurring workflow is therefore:
 
-- Date and entry time
-- Contract
-- Long / short
-- Quantity
-- Entry price
-- Exit price
-- Holding time
-- P/L
-- Running P/L for the day
-- Trade number within the day
-- Time since the previous trade
-- Process grade
-- Review tag
+1. Export the latest three CSV files from Profit.
+2. Click **Import new data**.
+3. Select whichever of the three files you are updating.
+4. Leave **Update OneNote automatically after the import** ticked.
+5. The master journal adds only genuinely new rows, then OneNote gets the new trade pages and refreshed daily/monthly summaries.
 
-You can filter by instrument, result and review status.
+Overlapping exports are expected. For example, an operations CSV containing the whole of 2026 again is safe to import.
 
-Single-click a row to select/review it. Double-click a row to open its chart.
+---
 
-### Trade chart
+## OneNote structure
 
-Each chart is designed for a roughly 12 x 9 monitor window and shows:
+The exporter creates a notebook such as:
 
-- Up to 50 minutes of 1-minute data before entry
-- The complete trade
-- 10 bars after exit, where available
-- 1-minute candlesticks
-- Quantity volume
-- RSI / IFR 14 in a thin panel above price
-- RSI reference levels at 70 and 30
-- MA 9
-- MA 20
-- MA 80
-- Daily VWAP
-- Current-session high and low as they were known at each minute
-- Previous session high and low
-- Entry and exit markers
-- Entry and exit information boxes positioned away from the candles
-- Approximate MFE and MAE horizontal levels over the trade
-- A compact summary line with realised move, MFE, MAE, MA values, VWAP and capture of MFE
+**My Trading Journal 2026**
 
-The price scale is deliberately kept tight around the visible candles so distant reference levels do not flatten the chart.
+Each month is a OneNote **Section Group**:
 
-Vertical grid lines are shared between the RSI, price and volume panels so candles, time marks and volume bars line up visually.
+- `05 - May 2026`
+- `06 - June 2026`
+- etc.
 
-### Previous / next trade navigation
+Inside each month group:
 
-Every chart has:
+- `00 - Monthly Summary` section
+  - `Monthly Summary - 05 - May 2026` page
+- one section for each trading day, e.g. `2026-05-08 - Fri`
+  - `Daily Summary - 08/05/2026` page
+  - `Trade 01 - WDOM26 - 09:14:15`
+  - `Trade 02 - WDOM26 - 09:17:44`
+  - etc.
 
-- `Previous trade`
-- `Next trade`
+The monthly and daily summary pages contain Profit-style performance statistics plus a table of trades.
 
-You can also use the keyboard Left and Right arrow keys.
+Each trade page contains the generated chart. Use OneNote's own Draw, pen, highlighter, text and other tools to journal directly on/around the image.
 
-Navigation follows the current order of the table, including any filters and sorting you have applied. For example, if you filter to losing trades and sort by P/L, the chart arrows move through that displayed list rather than reverting to chronological order.
+### Important preservation rule
 
-### Manual process review
+Trade pages are **create-only**. Once a trade has a OneNote page, later syncs do not overwrite it. This protects handwriting, ink and comments added in OneNote.
 
-For each trade you can save:
+Monthly and daily **summary** pages are refreshed when you sync so totals and trade lists remain current.
 
-- Process grade
-- Setup
-- Primary mistake / behaviour tag
-- Notes
+---
 
-These reviews are stored separately in:
+## Confirmed MFE / MAE
 
-```text
-output/trade_reviews.csv
-```
+The journal deliberately uses conservative **confirmed** MFE and MAE with 1-minute data.
 
-This means replacing the broker and market-data CSVs does not normally overwrite your manual reviews.
+The entry and exit prices are always included because those prices definitely occurred while the position existed.
 
-The intended distinction is important:
+A 1-minute candle high/low is used only when the complete candle interval was inside the exact entry-to-exit time. The entry and exit candles are not used wholesale if only part of those minutes was held.
 
-- A good trade can lose money.
-- A poor trade can make money.
+This prevents a pre-entry low/high from being incorrectly labelled as MAE/MFE. Exact intrabar MFE/MAE would require tick data.
 
-The purpose of the review fields is to judge the quality of the decision and management process, not merely the P/L outcome.
+---
 
-## Folder layout
+## First-time Python setup
 
-```text
-MyTradeReview/
-    app.py
-    charting.py
-    config.py
-    data_loader.py
-    reviews.py
-    stats.py
-    requirements.txt
-    README.md
-
-    data/
-        operations2026.csv
-        WINFUT_F_0_1min.csv
-        WDOFUT_F_0_1min.csv
-
-    output/
-        trade_reviews.csv
-```
-
-`.venv/` is normally also present locally after the PyCharm virtual environment is created, but it should not be committed to GitHub.
-
-## PyCharm setup
-
-Open the `MyTradeReview` folder as the project root.
-
-Create a new local Virtualenv inside:
-
-```text
-MyTradeReview\.venv
-```
-
-A normal current Windows Python installation is suitable. The project has been used with Python 3.14.
-
-After creating the environment, open the PyCharm Terminal and confirm that Python is coming from the project virtual environment:
+From the PyCharm terminal, with the project's `.venv` active:
 
 ```powershell
-python -c "import sys; print(sys.executable)"
-```
-
-It should show a path similar to:
-
-```text
-F:\Documents\PyCharmProjects\GitHub\MyTradeReview\.venv\Scripts\python.exe
-```
-
-Install the required packages:
-
-```powershell
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Tkinter comes with the normal Windows Python installation and is therefore not installed through `pip`.
-
-You can test Tkinter with:
-
-```powershell
-python -m tkinter
-```
-
-Then start the program with:
+Then run:
 
 ```powershell
 python app.py
 ```
 
-## Data files
+Extra packages used by the OneNote integration are:
 
-The program expects three CSV files in `data/`:
+- `requests`
+- `msal`
+- `beautifulsoup4`
 
-```text
-operations2026.csv
-WINFUT_F_0_1min.csv
-WDOFUT_F_0_1min.csv
-```
+---
 
-The operations file is the Profit trade export.
+# One-time Microsoft / OneNote setup
 
-The market files are 1-minute exports from Profit and must cover the dates of the trades you want to review.
+The OneNote API requires the user to sign in. This desktop app uses Microsoft Authentication Library (MSAL) and delegated permissions. It does **not** use or store a client secret.
 
-The program reads the trade timestamps and automatically extracts only the relevant section of WIN or WDO data needed for each chart.
+You need to create one Microsoft Entra app registration and paste its **Application (client) ID** into the journal.
 
-## Updating the data later
+## 1. Create the app registration
 
-The project is intended to be reused continuously.
+Open the Microsoft Entra admin center in your browser and create a new **App registration**.
 
-When you have newer trades:
+For supported account types, choose the option that includes the Microsoft account you use with OneNote. If you use a personal Microsoft account, the registration must allow personal Microsoft accounts.
 
-1. Export an updated operations file from Profit.
-2. Export/update the WINFUT 1-minute file.
-3. Export/update the WDOFUT 1-minute file.
-4. Replace the three CSVs in `data/` while keeping the same filenames.
-5. Click `Reload files` in the program, or restart it.
+A suggested name is:
 
-If you prefer different filenames, change the file paths in `config.py`.
+`MyTradeReview OneNote Journal`
 
-## Indicator calculations
+## 2. Add desktop/mobile authentication
 
-### MA 9, MA 20 and MA 80
-
-These are simple moving averages of the 1-minute closing price.
-
-### RSI / IFR 14
-
-The RSI panel uses a 14-period RSI calculation with reference lines at:
+Under **Authentication**, add the **Mobile and desktop applications** platform / public-client configuration and add this redirect URI:
 
 ```text
-70
-30
+http://localhost
 ```
 
-It is intended as context rather than as an automatic trading signal.
+If the registration has an **Allow public client flows** option, enable it for the desktop public-client application.
 
-### Daily VWAP
+## 3. Add Microsoft Graph delegated permissions
 
-VWAP resets at the beginning of each trading session.
-
-For each 1-minute bar the program uses typical price:
+Add delegated Microsoft Graph permissions:
 
 ```text
-(High + Low + Close) / 3
+Notes.ReadWrite
+User.Read
 ```
 
-weighted by the `Quantity` field from the Profit export.
+`Notes.ReadWrite` allows the signed-in user to read/write their OneNote notebooks. `User.Read` is used for normal signed-in-user access.
 
-The cumulative daily VWAP is therefore:
+## 4. Copy the client ID
+
+On the app registration Overview page copy:
+
+**Application (client) ID**
+
+It looks similar to:
 
 ```text
-cumulative(TypicalPrice × Quantity) / cumulative(Quantity)
+12345678-abcd-1234-abcd-1234567890ab
 ```
 
-The chart is intended to display VWAP as a prominent thick yellow line so it is visually distinct from the moving averages.
+Do not create a client secret for this program.
 
-### Session high / low
+## 5. Configure the journal
 
-The current-day high and low are rolling values.
+In the Python app click:
 
-For example, a chart at 10:15 only shows the high and low that had occurred by 10:15. It does not use the eventual final high or low of the day.
+**OneNote setup**
 
-This avoids introducing hindsight into the trade review.
+Paste the client ID and choose the notebook name. The default authority is:
 
-### Previous-session high / low
+```text
+https://login.microsoftonline.com/common
+```
 
-These are calculated from the complete previous trading session contained in the 1-minute file.
+Then click **Save**.
 
-## MFE and MAE
+## 6. First sync
 
-MFE = Maximum Favourable Excursion.
+Click:
 
-It measures the largest favourable price movement reached while the trade was open.
+**Update OneNote**
 
-MAE = Maximum Adverse Excursion.
+A Microsoft browser sign-in will appear. Sign in to the Microsoft account containing your OneNote notebooks and approve the requested permissions.
 
-It measures the largest adverse movement reached while the trade was open.
+After successful sign-in, the authentication token cache is stored locally under `journal/` so later updates normally do not require a full sign-in again.
 
-The chart draws horizontal MFE and MAE levels across the operation and extends them a few bars to the right so they are easy to compare with the entry and exit.
+---
 
-### Important limitation
+## Persistent files
 
-The operations file contains fill times to the second, while the market data is only 1-minute OHLC data.
+The local journal uses:
 
-Therefore MFE and MAE are approximate.
+```text
+journal/
+    trades_master.csv
+    WIN_1min_master.csv
+    WDO_1min_master.csv
+    trade_reviews.csv
+    chart_annotations.json
+    onenote_settings.json
+    onenote_token_cache.json
+    onenote_sync.json
+```
 
-For example, the high of the 10:15 candle might have occurred at 10:15:05 while your trade entered at 10:15:45. One-minute data cannot determine that ordering.
+Back up the **journal** folder. It is the persistent database for this project.
 
-Exact MFE/MAE would require tick-level market data.
+`onenote_sync.json` records which local trade IDs correspond to which OneNote pages. Keeping this file prevents duplicate trade pages.
 
-## Volume panel
+The entire `journal/` directory is intentionally excluded from Git by `.gitignore` because it contains personal trading data and authentication/cache information.
 
-The lower panel currently plots Profit's `Quantity` field.
+---
 
-This provides a useful visual measure of activity and is also the weighting used for the daily VWAP calculation.
+## Monthly/daily summary statistics
 
-## Compact chart summary
+The generated summary pages include the principal metrics available from the operations CSV, including:
 
-The bottom of the chart is intentionally kept minimal.
+- result / P&L;
+- gross profit;
+- gross loss;
+- profit factor;
+- total trades;
+- winners, losers and flat trades;
+- winning percentage;
+- average trade;
+- average winner;
+- average loser;
+- average winner : average loser ratio;
+- largest winner and loser;
+- longest winning and losing streaks;
+- average holding time;
+- average winning/losing holding time;
+- maximum contracts;
+- peak-to-trough drawdown;
+- largest one-trade decline.
 
-It reports the most useful objective trade-management numbers, including:
+The Profit operations CSV currently used by this project does not provide a per-operation brokerage/fees field from which the Profit report's **Custos** figure can be reconstructed reliably. OneNote therefore displays costs as unavailable rather than inventing a number.
 
-- Realised price move
-- MFE
-- MAE
-- MA 9
-- MA 20
-- MA 80
-- VWAP
-- Percentage of MFE captured
+---
 
-This keeps the chart focused on the actual price action rather than filling the window with text.
+## Updating the journal later
 
-## Show Stats
+You do not need to replace files manually.
 
-The `Show stats` button provides summary analysis of the trade history, including comparisons such as:
+Click **Import new data** and choose:
 
-- WIN vs WDO
-- Long vs short
-- Time of day
-- Holding time
-- Trade number within the day
-- Time since the preceding trade
-- Process grades
-- Review tags
+- operations/trades export;
+- WINFUT 1-minute export;
+- WDOFUT 1-minute export.
 
-The statistical breakdown is intended to identify behaviours worth investigating. It should not automatically be interpreted as causation.
+You may select all three, or only the files that changed.
 
-For example, if rapid re-entries perform badly, the next step is to inspect those trades to determine whether the issue was emotional re-entry, poor setup selection, market conditions, tight stops, or something else.
+The importer uses stable trade IDs and timestamps to ignore duplicate trades/bars. New trades are added to the master journal. If automatic OneNote update is enabled, the app then:
 
-## Suggested trade-review routine
+1. creates any missing month section group;
+2. creates any missing trading-day section;
+3. creates OneNote pages only for new trades;
+4. refreshes that day's summary;
+5. refreshes that month's summary.
 
-A useful order is:
+Existing OneNote trade pages are left alone so handwritten journal content remains intact.
 
-1. Look at the chart without focusing on the P/L first.
-2. Ask whether the entry was defensible using only information available at that moment.
-3. Check the surrounding price structure.
-4. Check MA 9, MA 20 and MA 80 context.
-5. Check whether price was above, below or interacting with daily VWAP.
-6. Check RSI context, but do not treat 70/30 mechanically as buy/sell signals.
-7. Check current-day and previous-session high/low levels.
-8. Examine MAE: did the trade immediately move against the entry?
-9. Examine MFE: did the idea work before the trade eventually failed or was exited?
-10. Compare the realised move with MFE to judge exit efficiency.
-11. Check whether this was a rapid re-entry after the previous trade.
-12. Assign a process grade and mistake/setup tag.
-13. Add a short note only when it captures something useful that the objective fields do not.
+---
 
-The central question is:
+## Git / branches
 
-> Was the trading decision and management good given what was knowable at the time?
+The source code can be committed to GitHub, but personal data should remain local.
 
-That is more useful than simply asking whether the trade won or lost.
+The supplied `.gitignore` excludes:
 
-## GitHub
-
-For a private GitHub repository, the following should normally be excluded in `.gitignore`:
-
-```gitignore
+```text
 .venv/
-__pycache__/
-*.pyc
 .idea/
-
 data/*.csv
-output/*.csv
+journal/
+output/charts/
 ```
 
-This keeps your local market data, actual trade history and personal review notes out of GitHub while still version-controlling the program itself.
+If you are working on the `Annotable_journal` branch, check before committing:
 
-## Files most likely to be edited
+```powershell
+git branch --show-current
+```
 
-### `config.py`
+Then commit normally:
 
-Use this for file paths and general application settings.
+```powershell
+git add .
+git commit -m "Add OneNote trading journal export"
+git push
+```
 
-### `charting.py`
+---
 
-Use this for chart appearance, indicators, colours, line thicknesses and layout.
+## Files added for OneNote
 
-### `data_loader.py`
+- `onenote_export.py` — Microsoft Graph authentication, notebook hierarchy and sync.
+- `onenote_settings.py` — local OneNote configuration.
+- `journal_summary.py` — monthly/daily Profit-style statistics and HTML tables.
+- `journal_chart_export.py` — generates clean chart PNGs for OneNote trade pages.
 
-Handles parsing and preparation of the operations and 1-minute market files.
-
-### `stats.py`
-
-Contains the summary analysis shown by `Show stats`.
-
-### `reviews.py`
-
-Handles saving/loading your manual review fields.
-
-## Current aim of the project
-
-The program is intended to answer questions such as:
-
-- Are entries the main problem, or trade management?
-- Are stops repeatedly too tight relative to normal MAE?
-- Do winning ideas get exited too early relative to MFE?
-- Are trades being taken in poor locations relative to VWAP and important session levels?
-- Is performance different when MA structure is aligned with the trade?
-- Are later trades in the day worse than earlier trades?
-- Are rapid re-entries or repeated attempts causing avoidable losses?
-- Are particular setups consistently good or bad?
-
-The objective is to turn a large trade history into a practical, trade-by-trade review process rather than an abstract backtest.
+The existing desktop chart/review code remains available for analysis in PyCharm.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
+import threading
 
 # Keep PyCharm's Run console useful. These are known pandas transition warnings,
 # not runtime errors in this application. Real exceptions are NOT hidden.
@@ -16,20 +18,23 @@ warnings.filterwarnings(
 )
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import pandas as pd
 
 import config
-from data_loader import load_all
+from journal_store import (bootstrap_if_needed, import_trades, import_market,
+                           load_master_trades, load_master_market)
 from charting import open_trade_chart
 from reviews import load_reviews, save_review, merge_reviews
 from stats import make_stats_report
+from onenote_settings import load_settings as load_onenote_settings, save_settings as save_onenote_settings
+from onenote_export import sync_to_onenote, OneNoteError
 
 
 class TradeReviewApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("My Trade Review - 2026")
+        self.title("My Trading Journal")
         self.geometry("1500x900")
         self.minsize(1150, 700)
 
@@ -48,7 +53,10 @@ class TradeReviewApp(tk.Tk):
 
         self.summary_var = tk.StringVar(value="Loading data...")
         ttk.Label(top, textvariable=self.summary_var, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(0, 20))
-        ttk.Button(top, text="Reload files", command=self.load_data).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Reload journal", command=self.load_data).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="OneNote setup", command=self.configure_onenote).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Update OneNote", command=self.start_onenote_sync).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Import new data", command=self.open_import_dialog).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Show stats", command=self.show_stats).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Open selected chart", command=self.open_selected_chart).pack(side=tk.RIGHT, padx=3)
 
@@ -137,20 +145,211 @@ class TradeReviewApp(tk.Tk):
 
     def load_data(self):
         try:
-            self.status_var.set("Reading trade and 1-minute files...")
+            self.status_var.set("Loading master trading journal...")
             self.update_idletasks()
-            trades, markets = load_all(config.TRADES_FILE, config.WIN_FILE, config.WDO_FILE, config.MA_FAST, config.MA_SLOW)
+            config.JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+            config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            config.CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+            bootstrap_if_needed(config)
+
+            trades = load_master_trades(config.MASTER_TRADES_FILE)
+            markets = {
+                "WIN": load_master_market(config.MASTER_WIN_FILE, config.MA_FAST, config.MA_SLOW, config.MA_LONG),
+                "WDO": load_master_market(config.MASTER_WDO_FILE, config.MA_FAST, config.MA_SLOW, config.MA_LONG),
+            }
+            if trades.empty:
+                raise ValueError("The journal has no trades yet. Use 'Import new data' to add a Profit operations export.")
+
             self.markets = markets
             self.reviews = load_reviews(config.REVIEWS_FILE)
             self.trades = merge_reviews(trades, self.reviews)
             self.apply_filters()
             self.update_summary()
             self.status_var.set(
-                f"Loaded {len(self.trades)} trades | WIN bars: {len(markets['WIN']):,} | WDO bars: {len(markets['WDO']):,} | Reviews saved to {config.REVIEWS_FILE.name}"
+                f"Journal: {len(self.trades)} trades | WIN bars: {len(markets['WIN']):,} | "
+                f"WDO bars: {len(markets['WDO']):,} | Persistent files: {config.JOURNAL_DIR.name}"
             )
         except Exception as exc:
-            messagebox.showerror("Could not load files", f"{exc}\n\nCheck README.md and the filenames in config.py.")
+            messagebox.showerror("Could not load journal", f"{exc}\n\nCheck README.md or use Import new data.")
             self.status_var.set("Load failed.")
+
+    def open_import_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Import new trading data")
+        dialog.geometry("760x270")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Choose any newer Profit exports you have. Leave a row blank if you are not updating it.",
+                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(12, 10))
+
+        trade_var = tk.StringVar()
+        win_var = tk.StringVar()
+        wdo_var = tk.StringVar()
+        sync_after_var = tk.BooleanVar(value=True)
+
+        def browse(var, title):
+            path = filedialog.askopenfilename(parent=dialog, title=title,
+                                              filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+            if path:
+                var.set(path)
+
+        rows = [
+            ("Operations / trades:", trade_var, "Select Profit operations export"),
+            ("WINFUT 1-minute data:", win_var, "Select WINFUT 1-minute export"),
+            ("WDOFUT 1-minute data:", wdo_var, "Select WDOFUT 1-minute export"),
+        ]
+        for i, (label, var, title) in enumerate(rows, start=1):
+            ttk.Label(dialog, text=label).grid(row=i, column=0, sticky="e", padx=(12, 6), pady=6)
+            ttk.Entry(dialog, textvariable=var, width=72).grid(row=i, column=1, sticky="ew", pady=6)
+            ttk.Button(dialog, text="Browse...", command=lambda v=var, t=title: browse(v, t)).grid(row=i, column=2, padx=8, pady=6)
+
+        ttk.Checkbutton(
+            dialog, text="Update OneNote automatically after the import", variable=sync_after_var
+        ).grid(row=4, column=1, sticky="w", pady=(8, 2))
+
+        dialog.columnconfigure(1, weight=1)
+
+        def do_import():
+            if not any(v.get().strip() for v in (trade_var, win_var, wdo_var)):
+                messagebox.showinfo("Nothing selected", "Choose at least one file to import.", parent=dialog)
+                return
+            try:
+                messages = []
+                if trade_var.get().strip():
+                    added, total = import_trades(Path(trade_var.get()), config.MASTER_TRADES_FILE)
+                    messages.append(f"Trades: {added} new ({total} total)")
+                if win_var.get().strip():
+                    added, total = import_market(Path(win_var.get()), config.MASTER_WIN_FILE)
+                    messages.append(f"WIN 1-min bars: {added:,} new ({total:,} total)")
+                if wdo_var.get().strip():
+                    added, total = import_market(Path(wdo_var.get()), config.MASTER_WDO_FILE)
+                    messages.append(f"WDO 1-min bars: {added:,} new ({total:,} total)")
+                dialog.destroy()
+                self.load_data()
+                messagebox.showinfo("Import complete", "\n".join(messages), parent=self)
+                if sync_after_var.get():
+                    self.after(250, self.start_onenote_sync)
+            except Exception as exc:
+                messagebox.showerror("Import failed", str(exc), parent=dialog)
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=3, sticky="e", padx=12, pady=14)
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="Import selected files", command=do_import).pack(side=tk.RIGHT, padx=4)
+
+    def configure_onenote(self):
+        settings = load_onenote_settings(config.ONENOTE_SETTINGS_FILE)
+        dialog = tk.Toplevel(self)
+        dialog.title("OneNote setup")
+        dialog.geometry("760x300")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Microsoft OneNote connection", font=("Segoe UI", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(14, 10)
+        )
+        ttk.Label(dialog, text="Application (client) ID:").grid(row=1, column=0, sticky="e", padx=(12, 8), pady=7)
+        client_var = tk.StringVar(value=settings.get("client_id", ""))
+        ttk.Entry(dialog, textvariable=client_var, width=58).grid(row=1, column=1, sticky="ew", padx=(0, 12), pady=7)
+
+        ttk.Label(dialog, text="Notebook name:").grid(row=2, column=0, sticky="e", padx=(12, 8), pady=7)
+        notebook_var = tk.StringVar(value=settings.get("notebook_name", "My Trading Journal 2026"))
+        ttk.Entry(dialog, textvariable=notebook_var, width=58).grid(row=2, column=1, sticky="ew", padx=(0, 12), pady=7)
+
+        ttk.Label(dialog, text="Authority:").grid(row=3, column=0, sticky="e", padx=(12, 8), pady=7)
+        authority_var = tk.StringVar(value=settings.get("authority", "https://login.microsoftonline.com/common"))
+        ttk.Entry(dialog, textvariable=authority_var, width=58).grid(row=3, column=1, sticky="ew", padx=(0, 12), pady=7)
+
+        help_text = (
+            "One-time Microsoft setup: create a Microsoft Entra app registration for a desktop/mobile public client, "
+            "add the http://localhost redirect URI, and grant delegated Notes.ReadWrite and User.Read permissions. "
+            "Paste its Application (client) ID above. No client secret is used."
+        )
+        ttk.Label(dialog, text=help_text, wraplength=700, justify="left").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=12, pady=(10, 4)
+        )
+        dialog.columnconfigure(1, weight=1)
+
+        def save():
+            client_id = client_var.get().strip()
+            if not client_id:
+                messagebox.showinfo("Client ID needed", "Enter the Application (client) ID from Microsoft Entra.", parent=dialog)
+                return
+            save_onenote_settings(config.ONENOTE_SETTINGS_FILE, {
+                "client_id": client_id,
+                "notebook_name": notebook_var.get().strip() or "My Trading Journal 2026",
+                "authority": authority_var.get().strip() or "https://login.microsoftonline.com/common",
+            })
+            dialog.destroy()
+            self.status_var.set("OneNote settings saved. Use Update OneNote to sign in and sync.")
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", padx=12, pady=14)
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="Save", command=save).pack(side=tk.RIGHT, padx=4)
+
+    def start_onenote_sync(self):
+        if self.trades.empty:
+            messagebox.showinfo("No trades", "Load or import trades before exporting to OneNote.", parent=self)
+            return
+        settings = load_onenote_settings(config.ONENOTE_SETTINGS_FILE)
+        if not settings.get("client_id", "").strip():
+            self.configure_onenote()
+            return
+
+        progress_win = tk.Toplevel(self)
+        progress_win.title("Updating OneNote")
+        progress_win.geometry("700x180")
+        progress_win.transient(self)
+        progress_var = tk.StringVar(value="Starting OneNote sync...")
+        ttk.Label(progress_win, text="My Trading Journal → OneNote", font=("Segoe UI", 11, "bold")).pack(
+            anchor="w", padx=14, pady=(14, 8)
+        )
+        ttk.Label(progress_win, textvariable=progress_var, wraplength=660, justify="left").pack(
+            fill=tk.X, padx=14, pady=8
+        )
+        bar = ttk.Progressbar(progress_win, mode="indeterminate")
+        bar.pack(fill=tk.X, padx=14, pady=8)
+        bar.start(10)
+
+        def progress(msg):
+            self.after(0, lambda: progress_var.set(msg))
+
+        def worker():
+            try:
+                result = sync_to_onenote(
+                    trades=self.trades.copy(), markets=self.markets, settings=settings,
+                    cache_path=config.ONENOTE_TOKEN_CACHE_FILE, sync_map_path=config.ONENOTE_SYNC_MAP_FILE,
+                    progress=progress,
+                )
+                def done():
+                    if progress_win.winfo_exists():
+                        progress_win.destroy()
+                    self.status_var.set(
+                        f"OneNote updated: {result.created_trade_pages} new trade pages; "
+                        f"{result.updated_summary_pages} summaries refreshed."
+                    )
+                    messagebox.showinfo(
+                        "OneNote updated",
+                        f"Notebook: {result.notebook_name}\n\n"
+                        f"New trade pages: {result.created_trade_pages}\n"
+                        f"Existing trade pages kept: {result.existing_trade_pages}\n"
+                        f"Summary pages refreshed: {result.updated_summary_pages}\n"
+                        f"New day/month sections: {result.created_sections + result.created_month_groups}\n\n"
+                        "Existing trade pages are not overwritten, so handwriting and other OneNote annotations remain intact.",
+                        parent=self,
+                    )
+                self.after(0, done)
+            except Exception as exc:
+                def failed():
+                    if progress_win.winfo_exists():
+                        progress_win.destroy()
+                    self.status_var.set("OneNote sync failed.")
+                    messagebox.showerror("OneNote sync failed", str(exc), parent=self)
+                self.after(0, failed)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def update_summary(self):
         df = self.trades
@@ -332,7 +531,8 @@ class TradeReviewApp(tk.Tk):
 
 
 if __name__ == "__main__":
-
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    config.JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    config.CHARTS_DIR.mkdir(parents=True, exist_ok=True)
     app = TradeReviewApp()
     app.mainloop()
