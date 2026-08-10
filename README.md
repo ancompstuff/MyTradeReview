@@ -1,377 +1,277 @@
-# MyTradeReview
+# My Trading Journal
 
-A reusable PyCharm/Tkinter application for reviewing day trades against 1-minute WINFUT and WDOFUT market data.
+A personal desktop trading journal for reviewing WINFUT and WDOFUT day trades from Nelogica Profit exports.
 
-The purpose of the program is not simply to label trades as winners or losers. It is designed to make each trade easy to inspect in its market context so you can distinguish entry problems, stop/management problems, exit problems, and possible overtrading/re-entry behaviour.
+The program keeps a permanent master history of your trades and 1-minute market data, lets you review each operation on its surrounding chart, classify the quality of your process, draw/write directly on charts, and save annotated journal images.
 
-## Main features
+## What the journal shows
 
-### Trade table
+The main table contains your completed trades with:
 
-The main window reads the Profit operations export and shows all completed trades in a sortable/filterable table, including:
-
-- Date and entry time
+- Date and exact entry time
 - Contract
 - Long / short
 - Quantity
-- Entry price
-- Exit price
+- Entry and exit prices
 - Holding time
 - P/L
-- Running P/L for the day
-- Trade number within the day
+- Cumulative P/L after the trade
+- Trade number within that day
 - Time since the previous trade
 - Process grade
-- Review tag
+- Primary review tag
 
-You can filter by instrument, result and review status.
+Double-click a trade (or select it and click **Open selected chart**) to open its chart.
 
-Single-click a row to select/review it. Double-click a row to open its chart.
+## Trade chart
 
-### Trade chart
+Each chart contains:
 
-Each chart is designed for a roughly 12 x 9 monitor window and shows:
-
-- Up to 50 minutes of 1-minute data before entry
-- The complete trade
+- Up to 50 minutes of 1-minute candles before entry, without carrying in the previous trading day
+- The full trade
 - 10 bars after exit, where available
-- 1-minute candlesticks
-- Quantity volume
-- RSI / IFR 14 in a thin panel above price
-- RSI reference levels at 70 and 30
+- Quantity volume aligned vertically with the candles
+- RSI/IFR 14 in a thin upper band, with 70 and 30 lines
 - MA 9
 - MA 20
 - MA 80
-- Daily VWAP
-- Current-session high and low as they were known at each minute
-- Previous session high and low
+- Daily VWAP (thick yellow/gold line)
+- Current-session high/low known at each point in time
+- Previous session high/low
 - Entry and exit markers
-- Entry and exit information boxes positioned away from the candles
-- Approximate MFE and MAE horizontal levels over the trade
-- A compact summary line with realised move, MFE, MAE, MA values, VWAP and capture of MFE
+- MFE and MAE levels across the operation
+- Realized move, MFE, MAE, MA9, MA20, MA80, VWAP and capture of MFE
 
-The price scale is deliberately kept tight around the visible candles so distant reference levels do not flatten the chart.
+The previous/next buttons and the keyboard Left/Right arrows move through the **current order of the table**, so filtering or sorting the table also changes the sequence you review.
 
-Vertical grid lines are shared between the RSI, price and volume panels so candles, time marks and volume bars line up visually.
+### MFE / MAE limitation
 
-### Previous / next trade navigation
+Trade fills contain seconds, while the market data contains 1-minute OHLC bars. Therefore MFE and MAE are approximate when an extreme occurs inside the entry or exit minute: the data cannot prove whether that high/low occurred before or after the fill within the minute.
 
-Every chart has:
+## Visual chart journal
 
-- `Previous trade`
-- `Next trade`
+Every chart has an annotation toolbar:
 
-You can also use the keyboard Left and Right arrow keys.
+- **Text** — click Text, then click the price chart and type a comment
+- **Pen** — click Pen, then click-drag to draw freehand
+- **Arrow** — click Arrow, click the start point, then click the end point
+- **Undo** — removes the most recent annotation for that trade
+- **Clear** — removes all annotations for that trade after confirmation
+- **Hide annotations / Show annotations** — switches between clean and annotated chart views
+- **Save PNG** — saves the current chart to `output/charts/`
 
-Navigation follows the current order of the table, including any filters and sorting you have applied. For example, if you filter to losing trades and sort by P/L, the chart arrows move through that displayed list rather than reverting to chronological order.
+Annotations are saved automatically to:
 
-### Manual process review
+`journal/chart_annotations.json`
 
-For each trade you can save:
+They reappear automatically whenever you reopen that trade.
+
+Saved PNGs are named using the trade date/time, instrument, direction and trade ID so they remain identifiable later.
+
+## Structured trade review
+
+The main window also keeps a structured review for every trade:
 
 - Process grade
 - Setup
-- Primary mistake / behaviour tag
-- Notes
+- Primary mistake/tag
+- Free-form notes
 
-These reviews are stored separately in:
+This is deliberately separate from chart drawings. The structured fields can later be analyzed statistically; the visual annotations capture what you actually saw on the chart.
 
-```text
-output/trade_reviews.csv
-```
+A useful principle is to grade the **decision/process**, not merely whether the trade made money. A well-executed trade can lose, and a poor trade can make money.
 
-This means replacing the broker and market-data CSVs does not normally overwrite your manual reviews.
+## Adding new trades and market data
 
-The intended distinction is important:
+This version is designed as a continuing journal rather than a one-off 2026 report.
 
-- A good trade can lose money.
-- A poor trade can make money.
+Click **Import new data** in the main window. You can select any combination of:
 
-The purpose of the review fields is to judge the quality of the decision and management process, not merely the P/L outcome.
+1. A newer Profit operations/trades CSV
+2. A newer WINFUT 1-minute CSV
+3. A newer WDOFUT 1-minute CSV
 
-## Folder layout
+Leave any row blank if you are not updating that file on this occasion.
+
+### You can update whenever you want
+
+For example:
+
+- every trading day
+- once a week
+- once a month
+
+There is no need to import every day.
+
+### Overlapping exports are safe
+
+The newer file does **not** have to contain only new rows.
+
+If a new operations export contains all of your old trades plus today's trades, import the whole file. Existing trades are recognized by their stable trade ID and ignored; only genuinely new operations are added.
+
+WIN/WDO market bars are similarly deduplicated by their 1-minute timestamp.
+
+After an import, daily trade numbering, day P/L and time-since-previous-trade fields are recalculated over the complete journal.
+
+## Permanent journal files
+
+The `journal/` directory is the important long-term data store:
+
+- `trades_master.csv` — master list of imported operations
+- `WIN_1min_master.csv` — accumulated WIN 1-minute history
+- `WDO_1min_master.csv` — accumulated WDO 1-minute history
+- `trade_reviews.csv` — process grades, setups, tags and notes
+- `chart_annotations.json` — text, arrows and pen drawings
+
+The original CSVs in `data/` are only source/import files. Once the master journal has been created, replacing or deleting an old source export does not delete previously imported journal records.
+
+**Back up the entire `journal/` folder.** It is your actual journal.
+
+## First run after upgrading from the earlier MyTradeReview
+
+Keep your existing project and current `data/` files.
+
+On first launch, the new version automatically creates the master journal from the current:
+
+- `data/operations2026.csv`
+- `data/WINFUT_F_0_1min.csv`
+- `data/WDOFUT_F_0_1min.csv`
+
+If an older `output/trade_reviews.csv` exists and the new journal does not already contain reviews, it is copied into the new journal automatically.
+
+## PyCharm setup
+
+Your project should look approximately like:
 
 ```text
 MyTradeReview/
     app.py
+    annotations.py
     charting.py
     config.py
     data_loader.py
+    journal_store.py
     reviews.py
     stats.py
     requirements.txt
     README.md
-
     data/
         operations2026.csv
         WINFUT_F_0_1min.csv
         WDOFUT_F_0_1min.csv
-
+    journal/
+        ... created automatically ...
     output/
-        trade_reviews.csv
+        charts/
 ```
 
-`.venv/` is normally also present locally after the PyCharm virtual environment is created, but it should not be committed to GitHub.
-
-## PyCharm setup
-
-Open the `MyTradeReview` folder as the project root.
-
-Create a new local Virtualenv inside:
+The virtual environment should normally be:
 
 ```text
-MyTradeReview\.venv
+MyTradeReview\.venv\Scripts\python.exe
 ```
 
-A normal current Windows Python installation is suitable. The project has been used with Python 3.14.
-
-After creating the environment, open the PyCharm Terminal and confirm that Python is coming from the project virtual environment:
+Install requirements from the PyCharm terminal:
 
 ```powershell
-python -c "import sys; print(sys.executable)"
-```
-
-It should show a path similar to:
-
-```text
-F:\Documents\PyCharmProjects\GitHub\MyTradeReview\.venv\Scripts\python.exe
-```
-
-Install the required packages:
-
-```powershell
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Tkinter comes with the normal Windows Python installation and is therefore not installed through `pip`.
-
-You can test Tkinter with:
-
-```powershell
-python -m tkinter
-```
-
-Then start the program with:
+Run:
 
 ```powershell
 python app.py
 ```
 
-## Data files
+## Files required from Profit
 
-The program expects three CSV files in `data/`:
+### Operations file
 
-```text
-operations2026.csv
-WINFUT_F_0_1min.csv
-WDOFUT_F_0_1min.csv
-```
+The reader expects a Profit operations export containing fields such as:
 
-The operations file is the Profit trade export.
+- Ativo
+- Abertura
+- Fechamento
+- Lado
+- Preço Compra
+- Preço Venda
+- Res. Operação
+- quantities, where available
 
-The market files are 1-minute exports from Profit and must cover the dates of the trades you want to review.
+`C` is interpreted as a long operation and `V` as a short operation.
 
-The program reads the trade timestamps and automatically extracts only the relevant section of WIN or WDO data needed for each chart.
+### 1-minute market exports
 
-## Updating the data later
+WIN and WDO files should contain 1-minute data corresponding to the trade dates. The reader uses the first nine Profit export fields as:
 
-The project is intended to be reused continuously.
+- Asset
+- Date
+- Time
+- Open
+- High
+- Low
+- Close
+- Volume
+- Quantity
 
-When you have newer trades:
+## Indicators
 
-1. Export an updated operations file from Profit.
-2. Export/update the WINFUT 1-minute file.
-3. Export/update the WDOFUT 1-minute file.
-4. Replace the three CSVs in `data/` while keeping the same filenames.
-5. Click `Reload files` in the program, or restart it.
+### Moving averages
 
-If you prefer different filenames, change the file paths in `config.py`.
-
-## Indicator calculations
-
-### MA 9, MA 20 and MA 80
-
-These are simple moving averages of the 1-minute closing price.
-
-### RSI / IFR 14
-
-The RSI panel uses a 14-period RSI calculation with reference lines at:
-
-```text
-70
-30
-```
-
-It is intended as context rather than as an automatic trading signal.
+MA9, MA20 and MA80 are simple moving averages of the 1-minute closing price over the complete chronological market series.
 
 ### Daily VWAP
 
-VWAP resets at the beginning of each trading session.
-
-For each 1-minute bar the program uses typical price:
+Daily VWAP resets each session and is calculated cumulatively using:
 
 ```text
-(High + Low + Close) / 3
+Typical price = (High + Low + Close) / 3
+VWAP = cumulative(Typical price × Quantity) / cumulative(Quantity)
 ```
 
-weighted by the `Quantity` field from the Profit export.
+Only bars up to the current point in the session contribute to that point's VWAP.
 
-The cumulative daily VWAP is therefore:
+### Current-day high/low
 
-```text
-cumulative(TypicalPrice × Quantity) / cumulative(Quantity)
-```
+The day high/low lines are cumulative levels known **at that time**, not the eventual final high and low of the day. This avoids introducing hindsight into entry review.
 
-The chart is intended to display VWAP as a prominent thick yellow line so it is visually distinct from the moving averages.
+## Recommended journal workflow
 
-### Session high / low
+A practical review session is:
 
-The current-day high and low are rolling values.
+1. Filter the table to the trades you want to study.
+2. Open the first chart.
+3. Judge whether the entry idea was sensible with the information available at that moment.
+4. Inspect location relative to VWAP, moving averages, RSI, session levels and recent price structure.
+5. Compare realized move with MFE and MAE.
+6. Add text/arrows/pen marks showing what you noticed.
+7. Save the structured process grade/tag/notes.
+8. Save a PNG when the annotated chart is worth keeping as an example.
+9. Press Right Arrow or **Next trade**.
 
-For example, a chart at 10:15 only shows the high and low that had occurred by 10:15. It does not use the eventual final high or low of the day.
+Over time, the structured reviews can be compared with P/L, holding time, trade number, re-entry gap, instrument, direction and other objective fields to identify recurring behaviors rather than relying on memory.
 
-This avoids introducing hindsight into the trade review.
+## GitHub and privacy
 
-### Previous-session high / low
+Your code can live on GitHub, but your personal trades and chart journal should generally stay local.
 
-These are calculated from the complete previous trading session contained in the 1-minute file.
+The supplied `.gitignore` excludes the persistent journal, CSV market/trade exports and generated chart images.
 
-## MFE and MAE
+Back up the `journal/` folder separately to a private location you control.
 
-MFE = Maximum Favourable Excursion.
+## Confirmed MFE / MAE with 1-minute data
 
-It measures the largest favourable price movement reached while the trade was open.
+The journal deliberately uses **confirmed** MFE and MAE rather than pretending that the intrabar sequence is known.
 
-MAE = Maximum Adverse Excursion.
+The definitions are:
 
-It measures the largest adverse movement reached while the trade was open.
+- Long trade: confirmed MFE = highest price confirmed while the position was open minus entry price; confirmed MAE = entry price minus lowest price confirmed while the position was open.
+- Short trade: confirmed MFE = entry price minus lowest price confirmed while the position was open; confirmed MAE = highest price confirmed while the position was open minus entry price.
 
-The chart draws horizontal MFE and MAE levels across the operation and extends them a few bars to the right so they are easy to compare with the entry and exit.
+Because the source market files contain 1-minute OHLC bars but trade fills include seconds, the program cannot know whether the high or low of a partially held entry/exit candle occurred before entry, during the trade, or after exit. To avoid false precision, it uses:
 
-### Important limitation
+1. the actual entry price;
+2. the actual exit price; and
+3. the high/low of any 1-minute candle whose **entire one-minute interval** was inside the trade.
 
-The operations file contains fill times to the second, while the market data is only 1-minute OHLC data.
-
-Therefore MFE and MAE are approximate.
-
-For example, the high of the 10:15 candle might have occurred at 10:15:05 while your trade entered at 10:15:45. One-minute data cannot determine that ordering.
-
-Exact MFE/MAE would require tick-level market data.
-
-## Volume panel
-
-The lower panel currently plots Profit's `Quantity` field.
-
-This provides a useful visual measure of activity and is also the weighting used for the daily VWAP calculation.
-
-## Compact chart summary
-
-The bottom of the chart is intentionally kept minimal.
-
-It reports the most useful objective trade-management numbers, including:
-
-- Realised price move
-- MFE
-- MAE
-- MA 9
-- MA 20
-- MA 80
-- VWAP
-- Percentage of MFE captured
-
-This keeps the chart focused on the actual price action rather than filling the window with text.
-
-## Show Stats
-
-The `Show stats` button provides summary analysis of the trade history, including comparisons such as:
-
-- WIN vs WDO
-- Long vs short
-- Time of day
-- Holding time
-- Trade number within the day
-- Time since the preceding trade
-- Process grades
-- Review tags
-
-The statistical breakdown is intended to identify behaviours worth investigating. It should not automatically be interpreted as causation.
-
-For example, if rapid re-entries perform badly, the next step is to inspect those trades to determine whether the issue was emotional re-entry, poor setup selection, market conditions, tight stops, or something else.
-
-## Suggested trade-review routine
-
-A useful order is:
-
-1. Look at the chart without focusing on the P/L first.
-2. Ask whether the entry was defensible using only information available at that moment.
-3. Check the surrounding price structure.
-4. Check MA 9, MA 20 and MA 80 context.
-5. Check whether price was above, below or interacting with daily VWAP.
-6. Check RSI context, but do not treat 70/30 mechanically as buy/sell signals.
-7. Check current-day and previous-session high/low levels.
-8. Examine MAE: did the trade immediately move against the entry?
-9. Examine MFE: did the idea work before the trade eventually failed or was exited?
-10. Compare the realised move with MFE to judge exit efficiency.
-11. Check whether this was a rapid re-entry after the previous trade.
-12. Assign a process grade and mistake/setup tag.
-13. Add a short note only when it captures something useful that the objective fields do not.
-
-The central question is:
-
-> Was the trading decision and management good given what was knowable at the time?
-
-That is more useful than simply asking whether the trade won or lost.
-
-## GitHub
-
-For a private GitHub repository, the following should normally be excluded in `.gitignore`:
-
-```gitignore
-.venv/
-__pycache__/
-*.pyc
-.idea/
-
-data/*.csv
-output/*.csv
-```
-
-This keeps your local market data, actual trade history and personal review notes out of GitHub while still version-controlling the program itself.
-
-## Files most likely to be edited
-
-### `config.py`
-
-Use this for file paths and general application settings.
-
-### `charting.py`
-
-Use this for chart appearance, indicators, colours, line thicknesses and layout.
-
-### `data_loader.py`
-
-Handles parsing and preparation of the operations and 1-minute market files.
-
-### `stats.py`
-
-Contains the summary analysis shown by `Show stats`.
-
-### `reviews.py`
-
-Handles saving/loading your manual review fields.
-
-## Current aim of the project
-
-The program is intended to answer questions such as:
-
-- Are entries the main problem, or trade management?
-- Are stops repeatedly too tight relative to normal MAE?
-- Do winning ideas get exited too early relative to MFE?
-- Are trades being taken in poor locations relative to VWAP and important session levels?
-- Is performance different when MA structure is aligned with the trade?
-- Are later trades in the day worse than earlier trades?
-- Are rapid re-entries or repeated attempts causing avoidable losses?
-- Are particular setups consistently good or bad?
-
-The objective is to turn a large trade history into a practical, trade-by-trade review process rather than an abstract backtest.
+It does **not** use the whole entry or exit candle when only part of that candle was held. This means confirmed MFE/MAE can understate the true excursion, but it will not attribute a pre-entry or post-exit candle extreme to the trade. Exact MFE/MAE would require tick or Times & Trades data covering the exact entry-to-exit timestamps.

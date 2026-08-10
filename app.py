@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 # Keep PyCharm's Run console useful. These are known pandas transition warnings,
 # not runtime errors in this application. Real exceptions are NOT hidden.
@@ -16,11 +17,12 @@ warnings.filterwarnings(
 )
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import pandas as pd
 
 import config
-from data_loader import load_all
+from journal_store import (bootstrap_if_needed, import_trades, import_market,
+                           load_master_trades, load_master_market)
 from charting import open_trade_chart
 from reviews import load_reviews, save_review, merge_reviews
 from stats import make_stats_report
@@ -29,7 +31,7 @@ from stats import make_stats_report
 class TradeReviewApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("My Trade Review - 2026")
+        self.title("My Trading Journal")
         self.geometry("1500x900")
         self.minsize(1150, 700)
 
@@ -48,7 +50,8 @@ class TradeReviewApp(tk.Tk):
 
         self.summary_var = tk.StringVar(value="Loading data...")
         ttk.Label(top, textvariable=self.summary_var, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(0, 20))
-        ttk.Button(top, text="Reload files", command=self.load_data).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Reload journal", command=self.load_data).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Import new data", command=self.open_import_dialog).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Show stats", command=self.show_stats).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Open selected chart", command=self.open_selected_chart).pack(side=tk.RIGHT, padx=3)
 
@@ -137,20 +140,91 @@ class TradeReviewApp(tk.Tk):
 
     def load_data(self):
         try:
-            self.status_var.set("Reading trade and 1-minute files...")
+            self.status_var.set("Loading master trading journal...")
             self.update_idletasks()
-            trades, markets = load_all(config.TRADES_FILE, config.WIN_FILE, config.WDO_FILE, config.MA_FAST, config.MA_SLOW)
+            config.JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+            config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            config.CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+            bootstrap_if_needed(config)
+
+            trades = load_master_trades(config.MASTER_TRADES_FILE)
+            markets = {
+                "WIN": load_master_market(config.MASTER_WIN_FILE, config.MA_FAST, config.MA_SLOW, config.MA_LONG),
+                "WDO": load_master_market(config.MASTER_WDO_FILE, config.MA_FAST, config.MA_SLOW, config.MA_LONG),
+            }
+            if trades.empty:
+                raise ValueError("The journal has no trades yet. Use 'Import new data' to add a Profit operations export.")
+
             self.markets = markets
             self.reviews = load_reviews(config.REVIEWS_FILE)
             self.trades = merge_reviews(trades, self.reviews)
             self.apply_filters()
             self.update_summary()
             self.status_var.set(
-                f"Loaded {len(self.trades)} trades | WIN bars: {len(markets['WIN']):,} | WDO bars: {len(markets['WDO']):,} | Reviews saved to {config.REVIEWS_FILE.name}"
+                f"Journal: {len(self.trades)} trades | WIN bars: {len(markets['WIN']):,} | "
+                f"WDO bars: {len(markets['WDO']):,} | Persistent files: {config.JOURNAL_DIR.name}"
             )
         except Exception as exc:
-            messagebox.showerror("Could not load files", f"{exc}\n\nCheck README.md and the filenames in config.py.")
+            messagebox.showerror("Could not load journal", f"{exc}\n\nCheck README.md or use Import new data.")
             self.status_var.set("Load failed.")
+
+    def open_import_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Import new trading data")
+        dialog.geometry("760x270")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Choose any newer Profit exports you have. Leave a row blank if you are not updating it.",
+                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(12, 10))
+
+        trade_var = tk.StringVar()
+        win_var = tk.StringVar()
+        wdo_var = tk.StringVar()
+
+        def browse(var, title):
+            path = filedialog.askopenfilename(parent=dialog, title=title,
+                                              filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+            if path:
+                var.set(path)
+
+        rows = [
+            ("Operations / trades:", trade_var, "Select Profit operations export"),
+            ("WINFUT 1-minute data:", win_var, "Select WINFUT 1-minute export"),
+            ("WDOFUT 1-minute data:", wdo_var, "Select WDOFUT 1-minute export"),
+        ]
+        for i, (label, var, title) in enumerate(rows, start=1):
+            ttk.Label(dialog, text=label).grid(row=i, column=0, sticky="e", padx=(12, 6), pady=6)
+            ttk.Entry(dialog, textvariable=var, width=72).grid(row=i, column=1, sticky="ew", pady=6)
+            ttk.Button(dialog, text="Browse...", command=lambda v=var, t=title: browse(v, t)).grid(row=i, column=2, padx=8, pady=6)
+
+        dialog.columnconfigure(1, weight=1)
+
+        def do_import():
+            if not any(v.get().strip() for v in (trade_var, win_var, wdo_var)):
+                messagebox.showinfo("Nothing selected", "Choose at least one file to import.", parent=dialog)
+                return
+            try:
+                messages = []
+                if trade_var.get().strip():
+                    added, total = import_trades(Path(trade_var.get()), config.MASTER_TRADES_FILE)
+                    messages.append(f"Trades: {added} new ({total} total)")
+                if win_var.get().strip():
+                    added, total = import_market(Path(win_var.get()), config.MASTER_WIN_FILE)
+                    messages.append(f"WIN 1-min bars: {added:,} new ({total:,} total)")
+                if wdo_var.get().strip():
+                    added, total = import_market(Path(wdo_var.get()), config.MASTER_WDO_FILE)
+                    messages.append(f"WDO 1-min bars: {added:,} new ({total:,} total)")
+                dialog.destroy()
+                self.load_data()
+                messagebox.showinfo("Import complete", "\n".join(messages), parent=self)
+            except Exception as exc:
+                messagebox.showerror("Import failed", str(exc), parent=dialog)
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=3, sticky="e", padx=12, pady=14)
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="Import selected files", command=do_import).pack(side=tk.RIGHT, padx=4)
 
     def update_summary(self):
         df = self.trades
@@ -332,7 +406,8 @@ class TradeReviewApp(tk.Tk):
 
 
 if __name__ == "__main__":
-
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    config.JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+    config.CHARTS_DIR.mkdir(parents=True, exist_ok=True)
     app = TradeReviewApp()
     app.mainloop()

@@ -4,14 +4,15 @@ import math
 import numpy as np
 import pandas as pd
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, FancyArrowPatch
 from matplotlib.transforms import blended_transform_factory
 
-from config import PRE_ENTRY_MINUTES, POST_EXIT_BARS, FIGSIZE, FIG_DPI
+from config import PRE_ENTRY_MINUTES, POST_EXIT_BARS, FIGSIZE, FIG_DPI, ANNOTATIONS_FILE, CHARTS_DIR
+from annotations import load_annotations, save_annotations
 
 
 RSI_PERIOD = 14
@@ -65,15 +66,14 @@ def get_trade_window(market: pd.DataFrame, trade: pd.Series):
     if "RSI14" not in day.columns:
         day["RSI14"] = _rsi(day["Close"], RSI_PERIOD)
 
-    # Long moving average and session VWAP are calculated from the start of
-    # the current trading day so the chart never uses future information.
-    day["MA80"] = day["Close"].rolling(MA_LONG_PERIOD, min_periods=1).mean()
-
-    typical_price = (day["High"] + day["Low"] + day["Close"]) / 3.0
-    vwap_weight = day["Quantity"].fillna(0).clip(lower=0)
-    cumulative_weight = vwap_weight.cumsum()
-    cumulative_pv = (typical_price * vwap_weight).cumsum()
-    day["VWAP"] = cumulative_pv.div(cumulative_weight.replace(0, np.nan)).ffill()
+    if "MA80" not in day.columns:
+        day["MA80"] = day["Close"].rolling(MA_LONG_PERIOD, min_periods=1).mean()
+    if "VWAP" not in day.columns:
+        typical_price = (day["High"] + day["Low"] + day["Close"]) / 3.0
+        vwap_weight = day["Quantity"].fillna(0).clip(lower=0)
+        cumulative_weight = vwap_weight.cumsum()
+        cumulative_pv = (typical_price * vwap_weight).cumsum()
+        day["VWAP"] = cumulative_pv.div(cumulative_weight.replace(0, np.nan)).ffill()
 
     entry_pos = _find_bar_pos(day, trade["EntryDT"])
     exit_pos = _find_bar_pos(day, trade["ExitDT"])
@@ -88,26 +88,51 @@ def get_trade_window(market: pd.DataFrame, trade: pd.Series):
 
 
 def trade_metrics(day: pd.DataFrame, trade: pd.Series):
-    entry_pos = _find_bar_pos(day, trade["EntryDT"])
-    exit_pos = _find_bar_pos(day, trade["ExitDT"])
-    lo, hi = sorted((entry_pos, exit_pos))
-    held = day.iloc[lo:hi + 1]
+    """Calculate trade metrics using only price information confirmed to occur while the trade was open.
+
+    With 1-minute OHLC data, the exact intrabar sequence is unknown. Therefore the entry and
+    exit candles are NOT used wholesale unless a full 1-minute bar is completely contained
+    between the exact entry and exit timestamps. The actual entry and exit prices are always
+    included because those prices are known to have occurred while the position was open.
+
+    This deliberately produces a conservative (minimum confirmed) MFE/MAE for trades whose
+    extrema may have occurred inside partial entry/exit candles. Tick data would be required
+    for exact intrabar MFE/MAE.
+    """
+    entry_dt = pd.Timestamp(trade["EntryDT"])
+    exit_dt = pd.Timestamp(trade["ExitDT"])
+    entry_pos = _find_bar_pos(day, entry_dt)
+
     entry = float(trade["EntryPrice"])
     exitp = float(trade["ExitPrice"])
     long_trade = trade["Side"] == "LONG"
 
+    # A 1-minute candle is safe only if the entire candle interval [start, start+1min]
+    # was inside the holding period. This excludes price action before entry and after exit.
+    bar_start = pd.to_datetime(day["DateTime"])
+    bar_end = bar_start + pd.Timedelta(minutes=1)
+    full_bar_mask = (bar_start >= entry_dt) & (bar_end <= exit_dt)
+    full_bars = day.loc[full_bar_mask]
+
+    # Entry and exit fills are indisputably prices reached while the trade existed.
+    confirmed_high = max(entry, exitp)
+    confirmed_low = min(entry, exitp)
+    if not full_bars.empty:
+        confirmed_high = max(confirmed_high, float(full_bars["High"].max()))
+        confirmed_low = min(confirmed_low, float(full_bars["Low"].min()))
+
     if long_trade:
-        mfe = held["High"].max() - entry
-        mae = entry - held["Low"].min()
+        mfe = confirmed_high - entry
+        mae = entry - confirmed_low
         realized = exitp - entry
-        favorable_level = float(held["High"].max())
-        adverse_level = float(held["Low"].min())
+        favorable_level = confirmed_high
+        adverse_level = confirmed_low
     else:
-        mfe = entry - held["Low"].min()
-        mae = held["High"].max() - entry
+        mfe = entry - confirmed_low
+        mae = confirmed_high - entry
         realized = entry - exitp
-        favorable_level = float(held["Low"].min())
-        adverse_level = float(held["High"].max())
+        favorable_level = confirmed_low
+        adverse_level = confirmed_high
 
     mfe = max(float(mfe), 0.0)
     mae = max(float(mae), 0.0)
@@ -135,6 +160,7 @@ def trade_metrics(day: pd.DataFrame, trade: pd.Series):
         "prev_low": row["PrevLow"],
         "favorable_level": favorable_level,
         "adverse_level": adverse_level,
+        "full_bars_used": int(full_bar_mask.sum()),
     }
 
 
@@ -146,8 +172,8 @@ def _add_trade_extreme_lines(ax, trade: pd.Series, metrics: dict, entry_x: float
     ax.hlines(metrics["adverse_level"], start_at, extend_to,
               colors="#b91c1c", linestyles="--", linewidth=1.2, zorder=4)
 
-    fav_label = f"MFE {_price_fmt(trade['Root'], metrics['mfe'])}"
-    adv_label = f"MAE {_price_fmt(trade['Root'], metrics['mae'])}"
+    fav_label = f"Confirmed MFE {_price_fmt(trade['Root'], metrics['mfe'])}"
+    adv_label = f"Confirmed MAE {_price_fmt(trade['Root'], metrics['mae'])}"
     ax.text(min(extend_to + 0.25, n_bars - 0.05), metrics["favorable_level"], fav_label,
             va="center", ha="left", fontsize=8.3, color="#166534",
             bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#15803d", alpha=0.9))
@@ -272,7 +298,7 @@ def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
     ax.plot(x, window["MA9"], linewidth=1.3, label="MA 9", color="#d97706")
     ax.plot(x, window["MA20"], linewidth=1.3, label="MA 20", color="#2563eb")
     ax.plot(x, window["MA80"], linewidth=1.25, label="MA 80", color="#111827")
-    ax.plot(x, window["VWAP"], linewidth=2, label="Daily VWAP", color="yellow")
+    ax.plot(x, window["VWAP"], linewidth=2.8, label="Daily VWAP", color="#FFD700", zorder=4)
     ax.plot(x, window["DayHighKnown"], linewidth=1.0, label="Day high", color="#15803d")
     ax.plot(x, window["DayLowKnown"], linewidth=1.0, label="Day low", color="#991b1b")
 
@@ -339,21 +365,185 @@ def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
     capture_text = "—" if pd.isna(metrics["capture"]) else f"{metrics['capture']:.0f}%"
     info_line = (
         f"Realized move: {_price_fmt(root, metrics['realized'])} pts     "
-        f"MFE: {_price_fmt(root, metrics['mfe'])} pts     "
-        f"MAE: {_price_fmt(root, metrics['mae'])} pts     "
+        f"Confirmed MFE: {_price_fmt(root, metrics['mfe'])} pts     "
+        f"Confirmed MAE: {_price_fmt(root, metrics['mae'])} pts     "
         f"MA9: {_price_fmt(root, metrics['ma9'])}     "
         f"MA20: {_price_fmt(root, metrics['ma20'])}     "
         f"MA80: {_price_fmt(root, metrics['ma80'])}     "
         f"VWAP: {_price_fmt(root, metrics['vwap'])}     "
-        f"Capture of MFE: {capture_text}"
+        f"Capture of confirmed MFE: {capture_text}"
     )
     axi.text(0.01, 0.55, info_line, va="center", ha="left", fontsize=9.2,
              family="sans-serif", transform=axi.transAxes)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.055, hspace=0.10)
+
+    # -------- Persistent journal annotations --------
+    annotation_bar = ttk.Frame(win, padding=(8, 3, 8, 3))
+    annotation_bar.pack(fill=tk.X)
+
     canvas = FigureCanvasTkAgg(fig, master=win)
-    canvas.draw()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    state = {
+        "mode": None,
+        "arrow_start": None,
+        "pen_points": [],
+        "pen_artist": None,
+        "artists": [],
+        "items": load_annotations(ANNOTATIONS_FILE, str(trade["trade_id"])),
+        "visible": True,
+    }
+    annotation_status = tk.StringVar(value="Annotation: off")
+
+    def persist():
+        save_annotations(ANNOTATIONS_FILE, str(trade["trade_id"]), state["items"])
+
+    def clear_artists():
+        for artist in state["artists"]:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        state["artists"].clear()
+
+    def draw_one(item):
+        kind = item.get("type")
+        artist = None
+        if kind == "text":
+            artist = ax.text(float(item["x"]), float(item["y"]), item.get("text", ""),
+                             fontsize=9, zorder=20,
+                             bbox=dict(boxstyle="round,pad=0.25", fc="#fffde7", ec="#374151", alpha=0.94))
+        elif kind == "arrow":
+            artist = FancyArrowPatch((float(item["x1"]), float(item["y1"])),
+                                     (float(item["x2"]), float(item["y2"])),
+                                     arrowstyle="->", mutation_scale=14, linewidth=1.8,
+                                     color="#c2410c", zorder=19)
+            ax.add_patch(artist)
+        elif kind == "pen":
+            pts = item.get("points", [])
+            if len(pts) >= 2:
+                xs = [float(pt[0]) for pt in pts]
+                ys = [float(pt[1]) for pt in pts]
+                artist, = ax.plot(xs, ys, linewidth=2.0, color="#c2410c", zorder=19)
+        if artist is not None:
+            artist.set_visible(state["visible"])
+            state["artists"].append(artist)
+
+    def redraw_annotations():
+        clear_artists()
+        for item in state["items"]:
+            draw_one(item)
+        canvas.draw_idle()
+
+    def set_mode(mode):
+        state["mode"] = mode
+        state["arrow_start"] = None
+        state["pen_points"] = []
+        annotation_status.set(f"Annotation: {mode}" if mode else "Annotation: off")
+
+    def undo_annotation():
+        if not state["items"]:
+            return
+        state["items"].pop()
+        persist()
+        redraw_annotations()
+
+    def clear_annotations():
+        if not state["items"]:
+            return
+        if messagebox.askyesno("Clear annotations", "Remove all annotations from this trade?", parent=win):
+            state["items"].clear()
+            persist()
+            redraw_annotations()
+
+    def toggle_annotations():
+        state["visible"] = not state["visible"]
+        for artist in state["artists"]:
+            artist.set_visible(state["visible"])
+        toggle_btn.configure(text="Hide annotations" if state["visible"] else "Show annotations")
+        canvas.draw_idle()
+
+    def save_chart_image():
+        CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+        side = "L" if trade["Side"] == "LONG" else "S"
+        filename = (f"{trade['EntryDT']:%Y-%m-%d_%H%M%S}_{trade['Root']}_{side}_"
+                    f"{str(trade['trade_id'])}.png")
+        path = CHARTS_DIR / filename
+        fig.savefig(path, dpi=160, bbox_inches="tight")
+        messagebox.showinfo("Chart saved", f"Saved to:\n{path}", parent=win)
+
+    def on_press(event):
+        if event.inaxes != ax or event.xdata is None or event.ydata is None:
+            return
+        mode = state["mode"]
+        if mode == "Text":
+            text = simpledialog.askstring("Chart comment", "Type your comment:", parent=win)
+            if text and text.strip():
+                state["items"].append({"type": "text", "x": float(event.xdata), "y": float(event.ydata), "text": text.strip()})
+                persist()
+                redraw_annotations()
+            set_mode(None)
+        elif mode == "Arrow":
+            if state["arrow_start"] is None:
+                state["arrow_start"] = (float(event.xdata), float(event.ydata))
+                annotation_status.set("Annotation: Arrow — click end point")
+            else:
+                x1, y1 = state["arrow_start"]
+                state["items"].append({"type": "arrow", "x1": x1, "y1": y1,
+                                       "x2": float(event.xdata), "y2": float(event.ydata)})
+                persist()
+                redraw_annotations()
+                set_mode(None)
+        elif mode == "Pen":
+            state["pen_points"] = [(float(event.xdata), float(event.ydata))]
+            state["pen_artist"], = ax.plot([event.xdata], [event.ydata], linewidth=2.0, color="#c2410c", zorder=21)
+            canvas.draw_idle()
+
+    def on_motion(event):
+        if state["mode"] != "Pen" or not state["pen_points"] or event.inaxes != ax:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        state["pen_points"].append((float(event.xdata), float(event.ydata)))
+        artist = state["pen_artist"]
+        if artist is not None:
+            artist.set_data([p[0] for p in state["pen_points"]], [p[1] for p in state["pen_points"]])
+            canvas.draw_idle()
+
+    def on_release(event):
+        if state["mode"] != "Pen" or not state["pen_points"]:
+            return
+        if state["pen_artist"] is not None:
+            try:
+                state["pen_artist"].remove()
+            except Exception:
+                pass
+            state["pen_artist"] = None
+        if len(state["pen_points"]) >= 2:
+            # Reduce file size slightly while preserving the drawn shape.
+            pts = state["pen_points"][::2] if len(state["pen_points"]) > 80 else state["pen_points"]
+            state["items"].append({"type": "pen", "points": [[x, y] for x, y in pts]})
+            persist()
+            redraw_annotations()
+        set_mode(None)
+
+    ttk.Button(annotation_bar, text="Text", command=lambda: set_mode("Text")).pack(side=tk.LEFT, padx=2)
+    ttk.Button(annotation_bar, text="Pen", command=lambda: set_mode("Pen")).pack(side=tk.LEFT, padx=2)
+    ttk.Button(annotation_bar, text="Arrow", command=lambda: set_mode("Arrow")).pack(side=tk.LEFT, padx=2)
+    ttk.Button(annotation_bar, text="Undo", command=undo_annotation).pack(side=tk.LEFT, padx=(10, 2))
+    ttk.Button(annotation_bar, text="Clear", command=clear_annotations).pack(side=tk.LEFT, padx=2)
+    toggle_btn = ttk.Button(annotation_bar, text="Hide annotations", command=toggle_annotations)
+    toggle_btn.pack(side=tk.LEFT, padx=(10, 2))
+    ttk.Button(annotation_bar, text="Save PNG", command=save_chart_image).pack(side=tk.LEFT, padx=2)
+    ttk.Label(annotation_bar, textvariable=annotation_status).pack(side=tk.RIGHT, padx=8)
+
+    canvas.mpl_connect("button_press_event", on_press)
+    canvas.mpl_connect("motion_notify_event", on_motion)
+    canvas.mpl_connect("button_release_event", on_release)
+
+    redraw_annotations()
+    canvas.draw()
     toolbar = NavigationToolbar2Tk(canvas, win)
     toolbar.update()
     win.focus_set()
