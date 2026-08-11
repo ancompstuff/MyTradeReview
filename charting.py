@@ -197,46 +197,15 @@ def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, 
                 annotation_clip=False)
 
 
-def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
-                     on_previous=None, on_next=None,
-                     has_previous: bool = False, has_next: bool = False,
-                     position_text: str = ""):
+def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
+    """Create the same trade chart used by the on-screen viewer.
 
-    try:
-        day, window, _, _ = get_trade_window(market, trade)
-        metrics = trade_metrics(day, trade)
-    except Exception as exc:
-        messagebox.showerror("Chart error", str(exc), parent=parent)
-        return
-
+    Returns a Matplotlib Figure. This is also used by the monthly PDF exporter,
+    so the PDF and on-screen chart share exactly the same plotting code.
+    """
+    day, window, _, _ = get_trade_window(market, trade)
+    metrics = trade_metrics(day, trade)
     root = trade["Root"]
-    win = tk.Toplevel(parent)
-    win.title(f"{trade['Ativo']}  |  {trade['EntryDT']:%d/%m/%Y %H:%M:%S}  |  {trade['Side']}  |  P/L R$ {trade['PL']:.2f}")
-    win.geometry("1280x960")
-
-    nav = ttk.Frame(win, padding=(8, 6))
-    nav.pack(fill=tk.X)
-    prev_btn = ttk.Button(nav, text="◀  Previous trade", width=18)
-    prev_btn.pack(side=tk.LEFT)
-    if on_previous is not None:
-        prev_btn.configure(command=lambda: on_previous(win))
-    if not has_previous:
-        prev_btn.state(["disabled"])
-
-    ttk.Label(nav, text=position_text, anchor=tk.CENTER,
-              font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, expand=True, fill=tk.X)
-
-    next_btn = ttk.Button(nav, text="Next trade  ▶", width=18)
-    next_btn.pack(side=tk.RIGHT)
-    if on_next is not None:
-        next_btn.configure(command=lambda: on_next(win))
-    if not has_next:
-        next_btn.state(["disabled"])
-
-    if on_previous is not None and has_previous:
-        win.bind("<Left>", lambda _e: on_previous(win))
-    if on_next is not None and has_next:
-        win.bind("<Right>", lambda _e: on_next(win))
 
     fig = Figure(figsize=FIGSIZE, dpi=FIG_DPI)
     gs = fig.add_gridspec(4, 1, height_ratios=[0.8, 6.3, 1.3, 0.55], hspace=0.03)
@@ -351,6 +320,49 @@ def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
              family="sans-serif", transform=axi.transAxes)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.055, hspace=0.10)
+
+    return fig
+
+
+def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
+                     on_previous=None, on_next=None,
+                     has_previous: bool = False, has_next: bool = False,
+                     position_text: str = ""):
+
+    try:
+        fig = create_trade_figure(market, trade)
+    except Exception as exc:
+        messagebox.showerror("Chart error", str(exc), parent=parent)
+        return
+
+    win = tk.Toplevel(parent)
+    win.title(f"{trade['Ativo']}  |  {trade['EntryDT']:%d/%m/%Y %H:%M:%S}  |  {trade['Side']}  |  P/L R$ {trade['PL']:.2f}")
+    win.geometry("1280x960")
+
+    nav = ttk.Frame(win, padding=(8, 6))
+    nav.pack(fill=tk.X)
+    prev_btn = ttk.Button(nav, text="◀  Previous trade", width=18)
+    prev_btn.pack(side=tk.LEFT)
+    if on_previous is not None:
+        prev_btn.configure(command=lambda: on_previous(win))
+    if not has_previous:
+        prev_btn.state(["disabled"])
+
+    ttk.Label(nav, text=position_text, anchor=tk.CENTER,
+              font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+    next_btn = ttk.Button(nav, text="Next trade  ▶", width=18)
+    next_btn.pack(side=tk.RIGHT)
+    if on_next is not None:
+        next_btn.configure(command=lambda: on_next(win))
+    if not has_next:
+        next_btn.state(["disabled"])
+
+    if on_previous is not None and has_previous:
+        win.bind("<Left>", lambda _e: on_previous(win))
+    if on_next is not None and has_next:
+        win.bind("<Right>", lambda _e: on_next(win))
+
     canvas = FigureCanvasTkAgg(fig, master=win)
     canvas.draw()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)

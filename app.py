@@ -24,6 +24,7 @@ from data_loader import load_all
 from charting import open_trade_chart
 from reviews import load_reviews, save_review, merge_reviews
 from stats import make_stats_report
+from pdf_export import generate_monthly_pdfs
 
 
 class TradeReviewApp(tk.Tk):
@@ -51,6 +52,7 @@ class TradeReviewApp(tk.Tk):
         ttk.Button(top, text="Reload files", command=self.load_data).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Show stats", command=self.show_stats).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Open selected chart", command=self.open_selected_chart).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Print monthly trades to PDF", command=self.print_monthly_trades).pack(side=tk.RIGHT, padx=3)
 
         filters = ttk.Frame(self, padding=(8, 2, 8, 8))
         filters.pack(fill=tk.X)
@@ -270,6 +272,47 @@ class TradeReviewApp(tk.Tk):
             has_next=pos < total - 1,
             position_text=f"Trade {pos + 1} of {total} in current list",
         )
+
+    def print_monthly_trades(self):
+        """Export every loaded trade as one chart per PDF page, grouped by month."""
+        if self.trades.empty:
+            messagebox.showinfo("No trades", "There are no trades loaded.")
+            return
+
+        try:
+            self.status_var.set("Creating monthly trade PDFs...")
+            self.update_idletasks()
+
+            pdf_paths, problems = generate_monthly_pdfs(
+                self.trades,
+                self.markets,
+                config.OUTPUT_DIR,
+                status_callback=self.status_var.set,
+            )
+
+            names = "\n".join(path.name for path in pdf_paths)
+            message = (
+                f"Created {len(pdf_paths)} monthly PDF(s):\n\n"
+                f"{names}\n\n"
+                f"Saved in:\n{config.OUTPUT_DIR / 'PDFs'}"
+            )
+
+            if problems:
+                message += (
+                    f"\n\n{len(problems)} trade(s) could not be exported. "
+                    "The first few problems were:\n\n"
+                    + "\n".join(problems[:8])
+                )
+
+            self.status_var.set(
+                f"Monthly PDFs created: {len(pdf_paths)} file(s) in "
+                f"{config.OUTPUT_DIR / 'PDFs'}"
+            )
+            messagebox.showinfo("Monthly PDFs created", message)
+
+        except Exception as exc:
+            self.status_var.set("PDF export failed.")
+            messagebox.showerror("PDF export failed", str(exc))
 
     def save_current_review(self):
         trade = self.selected_trade()

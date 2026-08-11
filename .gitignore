@@ -1,4 +1,8 @@
 __pycache__/
 *.pyc
 .idea/
+.venv/
+desktop.ini
 output/trade_reviews.csv
+output/PDFs/
+journal/
