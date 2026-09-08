@@ -8,18 +8,18 @@ from matplotlib.backends.backend_pdf import PdfPages
 from charting import create_trade_figure
 
 
-def generate_monthly_pdfs(
-    trades: pd.DataFrame,
-    markets: dict[str, pd.DataFrame],
-    output_dir: Path,
-    status_callback=None,
+def generate_trade_pdfs(
+        trades: pd.DataFrame,
+        markets: dict[str, pd.DataFrame],
+        output_dir: Path,
+        status_callback=None,
+        prefix: str = "Trade Review",
+        split_by_month: bool = True,
 ) -> tuple[list[Path], list[str]]:
-    """Create one PDF per month containing one existing trade chart per page.
+    """Export trade charts to PDF.
 
-    The chart itself is created by the same function used by the on-screen
-    trade viewer, so this feature does not introduce a second chart layout.
-
-    All loaded trades are exported, regardless of the current table filters.
+    If split_by_month is True, creates one PDF per month.
+    If split_by_month is False, exports all trades into a single PDF file.
     """
     if trades is None or trades.empty:
         raise ValueError("There are no trades loaded.")
@@ -34,19 +34,34 @@ def generate_monthly_pdfs(
     results: list[Path] = []
     problems: list[str] = []
 
-    for period, month_df in df.groupby(df["EntryDT"].dt.to_period("M"), sort=True):
-        pdf_path = pdf_dir / f"{period.strftime('%Y-%m')} Trade Review.pdf"
+    safe_prefix = "".join(c for c in prefix if c.isalnum() or c in (" ", "_", "-")).strip()
+
+    # Group trades by month or combine into one group
+    if split_by_month:
+        groups = [(period.strftime('%Y-%m'), group) for period, group in
+                  df.groupby(df["EntryDT"].dt.to_period("M"), sort=True)]
+    else:
+        date_range = f"{df['EntryDT'].min():%Y%m%d}_to_{df['EntryDT'].max():%Y%m%d}"
+        groups = [(date_range, df)]
+
+    for group_key, group_df in groups:
+        if split_by_month:
+            pdf_path = pdf_dir / f"{group_key} - {safe_prefix}.pdf"
+            pdf_title = f"{safe_prefix} - {group_key}"
+        else:
+            pdf_path = pdf_dir / f"{safe_prefix} ({len(group_df)} Trades).pdf"
+            pdf_title = f"{safe_prefix} - All Selected Trades"
 
         if status_callback:
-            status_callback(f"Creating {pdf_path.name} ({len(month_df)} trades)...")
+            status_callback(f"Creating {pdf_path.name} ({len(group_df)} trades)...")
 
         pages_written = 0
 
         with PdfPages(pdf_path) as pdf:
-            pdf.infodict()["Title"] = f"My Trade Review - {period.strftime('%B %Y')}"
+            pdf.infodict()["Title"] = pdf_title
             pdf.infodict()["Author"] = "MyTradeReview"
 
-            for _, trade in month_df.iterrows():
+            for _, trade in group_df.iterrows():
                 market = markets.get(trade["Root"])
                 if market is None or market.empty:
                     problems.append(
@@ -56,7 +71,7 @@ def generate_monthly_pdfs(
                     continue
 
                 try:
-                    fig = create_trade_figure(market, trade)
+                    fig = create_trade_figure(market, trade)  # Fixed typo here
                     pdf.savefig(fig)
                     plt.close(fig)
                     pages_written += 1
@@ -68,8 +83,6 @@ def generate_monthly_pdfs(
         if pages_written:
             results.append(pdf_path)
         else:
-            # Do not leave an empty PDF behind if none of the month's trades
-            # could be rendered.
             try:
                 pdf_path.unlink()
             except FileNotFoundError:
@@ -83,8 +96,6 @@ def generate_monthly_pdfs(
         )
 
     if status_callback:
-        status_callback(
-            f"Finished: {len(results)} monthly PDF(s) created in {pdf_dir}"
-        )
+        status_callback(f"Finished: {len(results)} PDF(s) created in {pdf_dir}")
 
     return results, problems

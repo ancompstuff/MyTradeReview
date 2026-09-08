@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import warnings
 
-# Keep PyCharm's Run console useful. These are known pandas transition warnings,
-# not runtime errors in this application. Real exceptions are NOT hidden.
 warnings.filterwarnings(
     "ignore",
     message=r".*Pyarrow will become a required dependency of pandas.*",
@@ -16,7 +14,7 @@ warnings.filterwarnings(
 )
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import pandas as pd
 
 import config
@@ -24,7 +22,7 @@ from data_loader import load_all
 from charting import open_trade_chart
 from reviews import load_reviews, save_review, merge_reviews
 from stats import make_stats_report
-from pdf_export import generate_monthly_pdfs
+from pdf_export import generate_trade_pdfs
 
 
 class TradeReviewApp(tk.Tk):
@@ -39,6 +37,7 @@ class TradeReviewApp(tk.Tk):
         self.reviews = pd.DataFrame()
         self.view_df = pd.DataFrame()
         self.selected_trade_id = None
+        self.custom_min_pl = 100.0
 
         self._build_ui()
         self.after(100, self.load_data)
@@ -52,21 +51,26 @@ class TradeReviewApp(tk.Tk):
         ttk.Button(top, text="Reload files", command=self.load_data).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Show stats", command=self.show_stats).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Open selected chart", command=self.open_selected_chart).pack(side=tk.RIGHT, padx=3)
-        ttk.Button(top, text="Print monthly trades to PDF", command=self.print_monthly_trades).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Print visible trades to PDF", command=self.print_monthly_trades).pack(side=tk.RIGHT,
+                                                                                                    padx=3)
 
         filters = ttk.Frame(self, padding=(8, 2, 8, 8))
         filters.pack(fill=tk.X)
+
         ttk.Label(filters, text="Instrument:").pack(side=tk.LEFT)
         self.instrument_var = tk.StringVar(value="All")
-        inst = ttk.Combobox(filters, textvariable=self.instrument_var, values=["All", "WIN", "WDO"], width=8, state="readonly")
+        inst = ttk.Combobox(filters, textvariable=self.instrument_var, values=["All", "WIN", "WDO"], width=8,
+                            state="readonly")
         inst.pack(side=tk.LEFT, padx=(4, 14))
         inst.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
 
-        ttk.Label(filters, text="Outcome:").pack(side=tk.LEFT)
+        ttk.Label(filters, text="Outcome / Selection:").pack(side=tk.LEFT)
         self.outcome_var = tk.StringVar(value="All")
-        out = ttk.Combobox(filters, textvariable=self.outcome_var, values=["All", "Win", "Loss", "Flat"], width=8, state="readonly")
+        out = ttk.Combobox(filters, textvariable=self.outcome_var,
+                           values=["All", "Top 20 Best", "Top 50 Best", "Win >= R$ X", "Win", "Loss", "Flat"],
+                           width=14, state="readonly")
         out.pack(side=tk.LEFT, padx=(4, 14))
-        out.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
+        out.bind("<<ComboboxSelected>>", lambda e: self.on_outcome_change())
 
         ttk.Label(filters, text="Review:").pack(side=tk.LEFT)
         self.review_filter_var = tk.StringVar(value="All")
@@ -75,12 +79,14 @@ class TradeReviewApp(tk.Tk):
         rev.pack(side=tk.LEFT, padx=(4, 14))
         rev.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
 
-        ttk.Label(filters, text="Tip: single-click to select/review; double-click to open the chart.").pack(side=tk.LEFT, padx=15)
+        ttk.Label(filters, text="Tip: double-click to open chart; use buttons/arrows to navigate.").pack(side=tk.LEFT,
+                                                                                                         padx=15)
 
         table_frame = ttk.Frame(self, padding=(8, 0, 8, 5))
         table_frame.pack(fill=tk.BOTH, expand=True)
 
-        columns = ["Date", "Time", "Instrument", "Side", "Qty", "Entry", "Exit", "Duration", "PL", "DayPL", "NoDay", "Gap", "Process", "Tag"]
+        columns = ["Date", "Time", "Instrument", "Side", "Qty", "Entry", "Exit", "Duration", "PL", "DayPL", "NoDay",
+                   "Gap", "Process", "Tag"]
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
         widths = {
             "Date": 90, "Time": 80, "Instrument": 85, "Side": 65, "Qty": 45,
@@ -116,7 +122,8 @@ class TradeReviewApp(tk.Tk):
 
         ttk.Label(review, text="Grade:").grid(row=0, column=0, sticky="w")
         self.grade_var = tk.StringVar(value="Unreviewed")
-        ttk.Combobox(review, textvariable=self.grade_var, values=config.PROCESS_GRADES, state="readonly", width=22).grid(row=0, column=1, sticky="w", padx=(4, 14))
+        ttk.Combobox(review, textvariable=self.grade_var, values=config.PROCESS_GRADES, state="readonly",
+                     width=22).grid(row=0, column=1, sticky="w", padx=(4, 14))
 
         ttk.Label(review, text="Setup:").grid(row=0, column=2, sticky="w")
         self.setup_var = tk.StringVar()
@@ -124,7 +131,8 @@ class TradeReviewApp(tk.Tk):
 
         ttk.Label(review, text="Primary tag:").grid(row=0, column=4, sticky="w")
         self.tag_var = tk.StringVar()
-        ttk.Combobox(review, textvariable=self.tag_var, values=config.MISTAKE_TAGS, width=29, state="readonly").grid(row=0, column=5, sticky="w", padx=(4, 14))
+        ttk.Combobox(review, textvariable=self.tag_var, values=config.MISTAKE_TAGS, width=29, state="readonly").grid(
+            row=0, column=5, sticky="w", padx=(4, 14))
 
         ttk.Button(review, text="Save review", command=self.save_current_review).grid(row=0, column=6, padx=4)
 
@@ -141,7 +149,8 @@ class TradeReviewApp(tk.Tk):
         try:
             self.status_var.set("Reading trade and 1-minute files...")
             self.update_idletasks()
-            trades, markets = load_all(config.TRADES_FILE, config.WIN_FILE, config.WDO_FILE, config.MA_FAST, config.MA_SLOW)
+            trades, markets = load_all(config.TRADES_FILE, config.WIN_FILE, config.WDO_FILE, config.MA_FAST,
+                                       config.MA_SLOW)
             self.markets = markets
             self.reviews = load_reviews(config.REVIEWS_FILE)
             self.trades = merge_reviews(trades, self.reviews)
@@ -155,37 +164,62 @@ class TradeReviewApp(tk.Tk):
             self.status_var.set("Load failed.")
 
     def update_summary(self):
-        df = self.trades
+        df = self.view_df if not self.view_df.empty else self.trades
         if df.empty:
             self.summary_var.set("No trades loaded")
             return
         wins = (df.PL > 0).sum()
-        losses = (df.PL < 0).sum()
-        avg_win = df.loc[df.PL > 0, "PL"].mean()
-        avg_loss = df.loc[df.PL < 0, "PL"].mean()
+        avg_win = df.loc[df.PL > 0, "PL"].mean() if wins > 0 else 0.0
         gross_win = df.loc[df.PL > 0, "PL"].sum()
         gross_loss = -df.loc[df.PL < 0, "PL"].sum()
         pf = gross_win / gross_loss if gross_loss > 0 else float("nan")
         self.summary_var.set(
-            f"{len(df)} trades | Net R$ {df.PL.sum():.2f} | Win rate {wins/len(df):.1%} | "
-            f"Avg win R$ {avg_win:.2f} | Avg loss R$ {avg_loss:.2f} | PF {pf:.2f} | {df.Date.nunique()} trading days"
+            f"Showing {len(df)} trades | Net R$ {df.PL.sum():.2f} | Win rate {wins / len(df):.1%} | "
+            f"Avg win R$ {avg_win:.2f} | PF {pf:.2f} | Min PL: R$ {df.PL.min():.2f}"
         )
+
+    def on_outcome_change(self):
+        if self.outcome_var.get() == "Win >= R$ X":
+            val = simpledialog.askfloat("Minimum Profit Threshold", "Enter minimum profit amount in R$:",
+                                        initialvalue=self.custom_min_pl, minvalue=0.0)
+            if val is not None:
+                self.custom_min_pl = val
+        self.apply_filters()
 
     def apply_filters(self):
         if self.trades.empty:
             return
         df = self.trades.copy()
+
+        # Instrument Filter
         if self.instrument_var.get() != "All":
             df = df[df.Root == self.instrument_var.get()]
-        if self.outcome_var.get() != "All":
-            df = df[df.Outcome == self.outcome_var.get()]
+
+        # Outcome / Best Trades Filter
+        outcome_sel = self.outcome_var.get()
+        if outcome_sel == "Win":
+            df = df[df.Outcome == "Win"]
+        elif outcome_sel == "Loss":
+            df = df[df.Outcome == "Loss"]
+        elif outcome_sel == "Flat":
+            df = df[df.Outcome == "Flat"]
+        elif outcome_sel == "Top 20 Best":
+            df = df.nlargest(20, "PL")
+        elif outcome_sel == "Top 50 Best":
+            df = df.nlargest(50, "PL")
+        elif outcome_sel == "Win >= R$ X":
+            df = df[df.PL >= self.custom_min_pl].sort_values("PL", ascending=False)
+
+        # Review Status Filter
         rf = self.review_filter_var.get()
         if rf == "Unreviewed":
             df = df[df.process_grade.eq("Unreviewed")]
         elif rf == "Reviewed":
             df = df[~df.process_grade.eq("Unreviewed")]
+
         self.view_df = df.copy()
         self.populate_tree()
+        self.update_summary()
 
     def populate_tree(self):
         self.tree.delete(*self.tree.get_children())
@@ -223,11 +257,9 @@ class TradeReviewApp(tk.Tk):
         )
 
     def _chart_trade_ids_in_current_order(self):
-        """Return trade IDs exactly as they are currently displayed in the table."""
         return list(self.tree.get_children(""))
 
     def _navigate_chart(self, current_trade_id, direction, chart_window):
-        """Move to previous/next trade in the CURRENT visible/sorted table."""
         ids = self._chart_trade_ids_in_current_order()
         if current_trade_id not in ids:
             return
@@ -237,7 +269,6 @@ class TradeReviewApp(tk.Tk):
             return
 
         next_id = ids[target]
-        # Keep the main table synchronized with the chart being reviewed.
         self.tree.selection_set(next_id)
         self.tree.focus(next_id)
         self.tree.see(next_id)
@@ -270,45 +301,62 @@ class TradeReviewApp(tk.Tk):
             on_next=lambda chart_win: self._navigate_chart(trade.trade_id, +1, chart_win),
             has_previous=pos > 0,
             has_next=pos < total - 1,
-            position_text=f"Trade {pos + 1} of {total} in current list",
+            position_text=f"Trade {pos + 1} of {total} in current selection",
         )
 
     def print_monthly_trades(self):
-        """Export every loaded trade as one chart per PDF page, grouped by month."""
-        if self.trades.empty:
-            messagebox.showinfo("No trades", "There are no trades loaded.")
+        """Export visible trades with option for single PDF vs monthly split."""
+        visible_ids = self._chart_trade_ids_in_current_order()
+        if not visible_ids:
+            messagebox.showinfo("No trades", "There are no visible trades in the table.")
             return
 
+        export_df = self.trades[self.trades.trade_id.isin(visible_ids)].copy()
+
+        # Determine default choice: single file for top selections, monthly for broad lists
+        selection_label = self.outcome_var.get()
+        is_top_selection = selection_label in ["Top 20 Best", "Top 50 Best", "Win >= R$ X"]
+
+        if selection_label == "Win >= R$ X":
+            selection_label = f"Win over R${self.custom_min_pl:.0f}"
+        elif selection_label == "All":
+            selection_label = "All Trades"
+
+        # Ask user how to format the PDF
+        split_by_month = messagebox.askyesno(
+            "PDF Export Option",
+            f"Exporting {len(export_df)} trade(s).\n\n"
+            f"Would you like to split the PDFs BY MONTH?\n\n"
+            f"• Click 'Yes' to create 1 PDF file per month.\n"
+            f"• Click 'No' to put ALL {len(export_df)} trades in 1 single PDF file.",
+            default=messagebox.NO if is_top_selection else messagebox.YES
+        )
+
         try:
-            self.status_var.set("Creating monthly trade PDFs...")
+            self.status_var.set(f"Exporting {len(export_df)} trade(s) to PDF...")
             self.update_idletasks()
 
-            pdf_paths, problems = generate_monthly_pdfs(
-                self.trades,
+            pdf_paths, problems = generate_trade_pdfs(
+                export_df,
                 self.markets,
                 config.OUTPUT_DIR,
                 status_callback=self.status_var.set,
+                prefix=selection_label,
+                split_by_month=split_by_month,
             )
 
             names = "\n".join(path.name for path in pdf_paths)
             message = (
-                f"Created {len(pdf_paths)} monthly PDF(s):\n\n"
+                f"Created {len(pdf_paths)} PDF file(s) containing {len(export_df)} trades:\n\n"
                 f"{names}\n\n"
                 f"Saved in:\n{config.OUTPUT_DIR / 'PDFs'}"
             )
 
             if problems:
-                message += (
-                    f"\n\n{len(problems)} trade(s) could not be exported. "
-                    "The first few problems were:\n\n"
-                    + "\n".join(problems[:8])
-                )
+                message += f"\n\n{len(problems)} trade(s) could not be exported."
 
-            self.status_var.set(
-                f"Monthly PDFs created: {len(pdf_paths)} file(s) in "
-                f"{config.OUTPUT_DIR / 'PDFs'}"
-            )
-            messagebox.showinfo("Monthly PDFs created", message)
+            self.status_var.set(f"PDF export complete: {len(pdf_paths)} file(s).")
+            messagebox.showinfo("PDF export complete", message)
 
         except Exception as exc:
             self.status_var.set("PDF export failed.")
@@ -328,8 +376,8 @@ class TradeReviewApp(tk.Tk):
             self.notes.get("1.0", tk.END).strip(),
         )
         self.reviews = load_reviews(config.REVIEWS_FILE)
-        # Refresh only review columns without rereading the large market files.
-        base_cols = [c for c in self.trades.columns if c not in ["process_grade", "setup", "mistake_tag", "notes", "updated_at"]]
+        base_cols = [c for c in self.trades.columns if
+                     c not in ["process_grade", "setup", "mistake_tag", "notes", "updated_at"]]
         base = self.trades[base_cols].copy()
         self.trades = merge_reviews(base, self.reviews)
         self.apply_filters()
@@ -343,7 +391,6 @@ class TradeReviewApp(tk.Tk):
 
         def key(item):
             value = item[0]
-            # Numeric-friendly sorting for P/L and prices.
             try:
                 return (0, float(value.replace(",", "")))
             except Exception:
@@ -355,11 +402,12 @@ class TradeReviewApp(tk.Tk):
         self.tree.heading(col, command=lambda: self.sort_tree(col, not reverse))
 
     def show_stats(self):
-        if self.trades.empty:
+        df = self.view_df if not self.view_df.empty else self.trades
+        if df.empty:
             return
-        report = make_stats_report(self.trades)
+        report = make_stats_report(df)
         win = tk.Toplevel(self)
-        win.title("Trade statistics")
+        win.title("Trade statistics (Filtered selection)")
         win.geometry("1050x780")
         text = tk.Text(win, wrap="none", font=("Consolas", 10))
         y = ttk.Scrollbar(win, orient=tk.VERTICAL, command=text.yview)
@@ -375,7 +423,6 @@ class TradeReviewApp(tk.Tk):
 
 
 if __name__ == "__main__":
-
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     app = TradeReviewApp()
     app.mainloop()
