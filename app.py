@@ -191,11 +191,9 @@ class TradeReviewApp(tk.Tk):
             return
         df = self.trades.copy()
 
-        # Instrument Filter
         if self.instrument_var.get() != "All":
             df = df[df.Root == self.instrument_var.get()]
 
-        # Outcome / Best Trades Filter
         outcome_sel = self.outcome_var.get()
         if outcome_sel == "Win":
             df = df[df.Outcome == "Win"]
@@ -210,7 +208,6 @@ class TradeReviewApp(tk.Tk):
         elif outcome_sel == "Win >= R$ X":
             df = df[df.PL >= self.custom_min_pl].sort_values("PL", ascending=False)
 
-        # Review Status Filter
         rf = self.review_filter_var.get()
         if rf == "Unreviewed":
             df = df[df.process_grade.eq("Unreviewed")]
@@ -313,7 +310,6 @@ class TradeReviewApp(tk.Tk):
 
         export_df = self.trades[self.trades.trade_id.isin(visible_ids)].copy()
 
-        # Determine default choice: single file for top selections, monthly for broad lists
         selection_label = self.outcome_var.get()
         is_top_selection = selection_label in ["Top 20 Best", "Top 50 Best", "Win >= R$ X"]
 
@@ -322,7 +318,6 @@ class TradeReviewApp(tk.Tk):
         elif selection_label == "All":
             selection_label = "All Trades"
 
-        # Ask user how to format the PDF
         split_by_month = messagebox.askyesno(
             "PDF Export Option",
             f"Exporting {len(export_df)} trade(s).\n\n"

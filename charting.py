@@ -13,7 +13,6 @@ from matplotlib.transforms import blended_transform_factory
 
 from config import PRE_ENTRY_MINUTES, POST_EXIT_BARS, FIGSIZE, FIG_DPI
 
-
 RSI_PERIOD = 14
 MA_LONG_PERIOD = 80
 
@@ -65,8 +64,6 @@ def get_trade_window(market: pd.DataFrame, trade: pd.Series):
     if "RSI14" not in day.columns:
         day["RSI14"] = _rsi(day["Close"], RSI_PERIOD)
 
-    # Long moving average and session VWAP are calculated from the start of
-    # the current trading day so the chart never uses future information.
     day["MA80"] = day["Close"].rolling(MA_LONG_PERIOD, min_periods=1).mean()
 
     typical_price = (day["High"] + day["Low"] + day["Close"]) / 3.0
@@ -100,24 +97,17 @@ def trade_metrics(day: pd.DataFrame, trade: pd.Series):
         mfe = held["High"].max() - entry
         mae = entry - held["Low"].min()
         realized = exitp - entry
-        favorable_level = float(held["High"].max())
-        adverse_level = float(held["Low"].min())
     else:
         mfe = entry - held["Low"].min()
         mae = held["High"].max() - entry
         realized = entry - exitp
-        favorable_level = float(held["Low"].min())
-        adverse_level = float(held["High"].max())
 
     mfe = max(float(mfe), 0.0)
     mae = max(float(mae), 0.0)
     capture = (realized / mfe * 100.0) if mfe > 0 else np.nan
 
     row = day.iloc[entry_pos]
-    if long_trade:
-        aligned = row["MA9"] >= row["MA20"]
-    else:
-        aligned = row["MA9"] <= row["MA20"]
+    aligned = (row["MA9"] >= row["MA20"]) if long_trade else (row["MA9"] <= row["MA20"])
 
     return {
         "mfe": mfe,
@@ -133,30 +123,11 @@ def trade_metrics(day: pd.DataFrame, trade: pd.Series):
         "day_low": row["DayLowKnown"],
         "prev_high": row["PrevHigh"],
         "prev_low": row["PrevLow"],
-        "favorable_level": favorable_level,
-        "adverse_level": adverse_level,
     }
 
 
-def _add_trade_extreme_lines(ax, trade: pd.Series, metrics: dict, entry_x: float, exit_x: float, n_bars: int):
-    extend_to = min(n_bars - 0.35, exit_x + 3.0)
-    start_at = max(0.0, entry_x)
-    ax.hlines(metrics["favorable_level"], start_at, extend_to,
-              colors="#15803d", linestyles="--", linewidth=1.2, zorder=4)
-    ax.hlines(metrics["adverse_level"], start_at, extend_to,
-              colors="#b91c1c", linestyles="--", linewidth=1.2, zorder=4)
-
-    fav_label = f"MFE {_price_fmt(trade['Root'], metrics['mfe'])}"
-    adv_label = f"MAE {_price_fmt(trade['Root'], metrics['mae'])}"
-    ax.text(min(extend_to + 0.25, n_bars - 0.05), metrics["favorable_level"], fav_label,
-            va="center", ha="left", fontsize=8.3, color="#166534",
-            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#15803d", alpha=0.9))
-    ax.text(min(extend_to + 0.25, n_bars - 0.05), metrics["adverse_level"], adv_label,
-            va="center", ha="left", fontsize=8.3, color="#991b1b",
-            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#b91c1c", alpha=0.9))
-
-
-def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, n_bars: int):
+def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, entry_y: float, exit_y: float,
+                           n_bars: int):
     root = trade["Root"]
     entry_text = f"ENTRY  {trade['EntryDT']:%H:%M:%S}   {_price_fmt(root, trade['EntryPrice'])}"
     exit_text = f"EXIT  {trade['ExitDT']:%H:%M:%S}   {_price_fmt(root, trade['ExitPrice'])}"
@@ -164,46 +135,42 @@ def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, 
     trans = blended_transform_factory(ax.transData, ax.transAxes)
 
     def _ha(x):
-        if x <= n_bars * 0.20:
+        if x <= n_bars * 0.18:
             return "left"
-        if x >= n_bars * 0.80:
+        if x >= n_bars * 0.82:
             return "right"
         return "center"
 
-    def _x_adjust(x):
-        if x <= n_bars * 0.08:
-            return 1.2
-        if x >= n_bars * 0.92:
-            return n_bars - 1.2
-        return x
+    is_long = trade["Side"] == "LONG"
+    entry_color = "#15803d" if is_long else "#b91c1c"
+    exit_color = "#b91c1c" if is_long else "#15803d"
 
-    entry_anchor_x = _x_adjust(entry_x)
-    exit_anchor_x = _x_adjust(exit_x)
+    # ENTRY Box pointing directly to trade entry level on candles
+    ax.annotate(
+        entry_text,
+        xy=(entry_x, entry_y), xycoords="data",
+        xytext=(entry_x, 0.82), textcoords=trans,
+        ha=_ha(entry_x), va="top", fontsize=8.5, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", fc="white", ec=entry_color, lw=1.2, alpha=0.95),
+        arrowprops=dict(arrowstyle="->", lw=1.0, color=entry_color),
+        zorder=8,
+    )
 
-    ax.annotate(entry_text,
-                xy=(entry_x, trade["EntryPrice"]), xycoords="data",
-                xytext=(entry_anchor_x, 0.965), textcoords=trans,
-                ha=_ha(entry_x), va="top", fontsize=8.5,
-                bbox=dict(boxstyle="round,pad=0.22", fc="white", ec="#374151", alpha=0.95),
-                arrowprops=dict(arrowstyle="->", lw=0.8, color="#374151"),
-                annotation_clip=False)
-
-    ax.annotate(exit_text,
-                xy=(exit_x, trade["ExitPrice"]), xycoords="data",
-                xytext=(exit_anchor_x, 0.035), textcoords=trans,
-                ha=_ha(exit_x), va="bottom", fontsize=8.5,
-                bbox=dict(boxstyle="round,pad=0.22", fc="white", ec="#374151", alpha=0.95),
-                arrowprops=dict(arrowstyle="->", lw=0.8, color="#374151"),
-                annotation_clip=False)
+    # EXIT Box pointing directly to trade exit level on candles
+    ax.annotate(
+        exit_text,
+        xy=(exit_x, exit_y), xycoords="data",
+        xytext=(exit_x, 0.08), textcoords=trans,
+        ha=_ha(exit_x), va="bottom", fontsize=8.5, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", fc="white", ec=exit_color, lw=1.2, alpha=0.95),
+        arrowprops=dict(arrowstyle="->", lw=1.0, color=exit_color),
+        zorder=8,
+    )
 
 
 def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
-    """Create the same trade chart used by the on-screen viewer.
-
-    Returns a Matplotlib Figure. This is also used by the monthly PDF exporter,
-    so the PDF and on-screen chart share exactly the same plotting code.
-    """
-    day, window, _, _ = get_trade_window(market, trade)
+    """Create chart figure with entry-to-exit price/time box anchored directly to candle price action."""
+    day, window, entry_bar_pos, exit_bar_pos = get_trade_window(market, trade)
     metrics = trade_metrics(day, trade)
     root = trade["Root"]
 
@@ -218,7 +185,7 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
     x = np.arange(len(window))
     candle_width = 0.66
 
-    # Thin RSI/IFR band.
+    # RSI Band
     axr.plot(x, window["RSI14"], linewidth=1.0, color="#7c3aed")
     axr.axhline(70, color="#b91c1c", linewidth=0.8, linestyle="--")
     axr.axhline(30, color="#15803d", linewidth=0.8, linestyle="--")
@@ -226,7 +193,7 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
     axr.set_ylabel("RSI", fontsize=8)
     axr.tick_params(axis="y", labelsize=8)
 
-    # Candles.
+    # Candlesticks
     price_span = max(window["High"].max() - window["Low"].min(), 1.0)
     min_body = price_span * 0.00035
     for i, row in window.iterrows():
@@ -238,6 +205,7 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
         ax.add_patch(Rectangle((i - candle_width / 2, lower), candle_width, height,
                                facecolor=face, edgecolor="black", linewidth=0.8, zorder=3))
 
+    # Moving Averages & Levels
     ax.plot(x, window["MA9"], linewidth=1.3, label="MA 9", color="#d97706")
     ax.plot(x, window["MA20"], linewidth=1.3, label="MA 20", color="#2563eb")
     ax.plot(x, window["MA80"], linewidth=1.25, label="MA 80", color="#111827")
@@ -252,26 +220,44 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
     if not prev_low.empty:
         ax.axhline(prev_low.iloc[0], linestyle="--", linewidth=1.0, color="#7e22ce")
 
-    # Highlight trade period and markers.
+    # Time coordinates
     entry_x = _fractional_x(window, trade["EntryDT"])
     exit_x = _fractional_x(window, trade["ExitDT"])
-    entry_color = "#15803d" if trade["Side"] == "LONG" else "#b91c1c"
-    ax.axvspan(entry_x, exit_x, color=entry_color, alpha=0.06, zorder=0)
-    ax.scatter([entry_x], [trade["EntryPrice"]], s=90,
-               marker="^" if trade["Side"] == "LONG" else "v",
-               color=entry_color, edgecolor="black", linewidth=0.5, zorder=6)
-    ax.scatter([exit_x], [trade["ExitPrice"]], s=75, marker="X",
-               color="#111827", edgecolor="white", linewidth=0.5, zorder=6)
 
-    _add_trade_extreme_lines(ax, trade, metrics, entry_x, exit_x, len(window))
-    _annotate_trade_points(ax, trade, entry_x, exit_x, len(window))
+    # Candle price anchoring logic:
+    # 1. Take entry bar Open price on the chart as the visual entry baseline
+    entry_bar = day.iloc[entry_bar_pos]
+    candle_entry_p = float(entry_bar["Open"])
 
-    # Tighter y-scale so candles use vertical space better.
+    # 2. Add the actual points realized/lost in the trade to determine visual exit level on candles
+    is_long = trade["Side"] == "LONG"
+    pts_change = (float(trade["ExitPrice"]) - float(trade["EntryPrice"])) if is_long else (
+                float(trade["EntryPrice"]) - float(trade["ExitPrice"]))
+    candle_exit_p = candle_entry_p + (pts_change if is_long else -pts_change)
+
+    box_x = entry_x
+    box_w = max(exit_x - entry_x, 0.25)
+    box_y = min(candle_entry_p, candle_exit_p)
+    box_h = max(abs(candle_exit_p - candle_entry_p), price_span * 0.008)
+
+    box_color = "#15803d" if trade["PL"] >= 0 else "#b91c1c"
+
+    trade_box = Rectangle(
+        (box_x, box_y), box_w, box_h,
+        facecolor=box_color, alpha=0.30,
+        edgecolor=box_color, linestyle="--", linewidth=1.8,
+        zorder=5, label="Trade Box"
+    )
+    ax.add_patch(trade_box)
+
+    # ENTRY / EXIT text annotations pointing directly to the candle entry & exit prices
+    _annotate_trade_points(ax, trade, entry_x, exit_x, candle_entry_p, candle_exit_p, len(window))
+
+    # Y-axis bounds lock strictly to the candle window
     visible_low = float(window["Low"].min())
     visible_high = float(window["High"].max())
     visible_span = max(visible_high - visible_low, 1.0)
-    y_pad = visible_span * 0.04
-    ax.set_ylim(visible_low - y_pad, visible_high + y_pad)
+    ax.set_ylim(visible_low - visible_span * 0.05, visible_high + visible_span * 0.15)
 
     result_word = "WIN" if trade["PL"] > 0 else "LOSS" if trade["PL"] < 0 else "FLAT"
     fig.suptitle(
@@ -281,13 +267,14 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
         x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985
     )
     ax.set_ylabel("Price")
-    ax.legend(loc="upper left", fontsize=8, ncol=4, framealpha=0.9)
 
+    ax.legend(loc="upper right", fontsize=8, ncol=4, framealpha=0.9)
+
+    # Volume Subplot
     volumes = window["Quantity"].fillna(0)
     axv.bar(x, volumes, width=0.66, color="#6b7280", align="center")
     axv.set_ylabel("Qty")
 
-    # Shared time ticks and vertical grid so candles and volume line up visually.
     step = max(1, math.ceil(len(window) / 12))
     ticks = list(range(0, len(window), step))
     if len(window) - 1 not in ticks:
@@ -328,7 +315,6 @@ def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
                      on_previous=None, on_next=None,
                      has_previous: bool = False, has_next: bool = False,
                      position_text: str = ""):
-
     try:
         fig = create_trade_figure(market, trade)
     except Exception as exc:
@@ -336,7 +322,8 @@ def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
         return
 
     win = tk.Toplevel(parent)
-    win.title(f"{trade['Ativo']}  |  {trade['EntryDT']:%d/%m/%Y %H:%M:%S}  |  {trade['Side']}  |  P/L R$ {trade['PL']:.2f}")
+    win.title(
+        f"{trade['Ativo']}  |  {trade['EntryDT']:%d/%m/%Y %H:%M:%S}  |  {trade['Side']}  |  P/L R$ {trade['PL']:.2f}")
     win.geometry("1280x960")
 
     nav = ttk.Frame(win, padding=(8, 6))

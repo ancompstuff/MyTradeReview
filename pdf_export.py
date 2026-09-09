@@ -9,18 +9,13 @@ from charting import create_trade_figure
 
 
 def generate_trade_pdfs(
-        trades: pd.DataFrame,
-        markets: dict[str, pd.DataFrame],
-        output_dir: Path,
-        status_callback=None,
-        prefix: str = "Trade Review",
-        split_by_month: bool = True,
+    trades: pd.DataFrame,
+    markets: dict[str, pd.DataFrame],
+    output_dir: Path,
+    status_callback=None,
+    prefix: str = "Trade Review",
+    split_by_month: bool = True,
 ) -> tuple[list[Path], list[str]]:
-    """Export trade charts to PDF.
-
-    If split_by_month is True, creates one PDF per month.
-    If split_by_month is False, exports all trades into a single PDF file.
-    """
     if trades is None or trades.empty:
         raise ValueError("There are no trades loaded.")
 
@@ -36,13 +31,10 @@ def generate_trade_pdfs(
 
     safe_prefix = "".join(c for c in prefix if c.isalnum() or c in (" ", "_", "-")).strip()
 
-    # Group trades by month or combine into one group
     if split_by_month:
-        groups = [(period.strftime('%Y-%m'), group) for period, group in
-                  df.groupby(df["EntryDT"].dt.to_period("M"), sort=True)]
+        groups = [(period.strftime('%Y-%m'), group) for period, group in df.groupby(df["EntryDT"].dt.to_period("M"), sort=True)]
     else:
-        date_range = f"{df['EntryDT'].min():%Y%m%d}_to_{df['EntryDT'].max():%Y%m%d}"
-        groups = [(date_range, df)]
+        groups = [("All_Selected", df)]
 
     for group_key, group_df in groups:
         if split_by_month:
@@ -71,7 +63,7 @@ def generate_trade_pdfs(
                     continue
 
                 try:
-                    fig = create_trade_figure(market, trade)  # Fixed typo here
+                    fig = create_trade_figure(market, trade)
                     pdf.savefig(fig)
                     plt.close(fig)
                     pages_written += 1
