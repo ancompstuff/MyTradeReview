@@ -155,30 +155,31 @@ def load_market(path: Path, fast_ma: int = 9, slow_ma: int = 20) -> pd.DataFrame
     for col in ["Open", "High", "Low", "Close", "Volume", "Quantity"]:
         df[col] = df[col].map(br_number)
 
+        return add_market_indicators(df, fast_ma, slow_ma)
+
+def add_market_indicators(df: pd.DataFrame, fast_ma: int = 9, slow_ma: int = 20) -> pd.DataFrame:
     df = df.dropna(subset=["Open", "High", "Low", "Close"]).sort_values("DateTime").reset_index(drop=True)
     df["SessionDate"] = df["DateTime"].dt.date
 
-    # MAs are calculated on the full chronological series, like a normal intraday chart.
     df["MA9"] = df["Close"].rolling(fast_ma, min_periods=1).mean()
     df["MA20"] = df["Close"].rolling(slow_ma, min_periods=1).mean()
 
-    # These are rolling, not final-day hindsight levels.
     df["DayHighKnown"] = df.groupby("SessionDate")["High"].cummax()
     df["DayLowKnown"] = df.groupby("SessionDate")["Low"].cummin()
 
     daily = df.groupby("SessionDate").agg(SessionHigh=("High", "max"), SessionLow=("Low", "min")).reset_index()
     daily["PrevHigh"] = daily["SessionHigh"].shift(1)
     daily["PrevLow"] = daily["SessionLow"].shift(1)
-    df = df.merge(daily[["SessionDate", "PrevHigh", "PrevLow"]], on="SessionDate", how="left")
-    return df
+    return df.merge(daily[["SessionDate", "PrevHigh", "PrevLow"]], on="SessionDate", how="left")
 
 
 def load_all(
     trades_file: Path,
     market_choice: str,
-    market_file: Path,
+    market_file: Path | None = None,
     fast_ma=9,
     slow_ma=20,
+    market_df: pd.DataFrame | None = None,
 ):
     if market_choice not in MARKET_ROOT_BY_CHOICE:
         raise ValueError(f"Unknown market choice: {market_choice}")
@@ -190,31 +191,28 @@ def load_all(
     if trades.empty:
         raise ValueError(
             f"No {market_choice} trades found in {trades_file.name}. "
-            f"Check selected market type and trade file contents."
+            f"Check the selected market type and the trade file contents."
         )
 
-    market_df = load_market(market_file, fast_ma, slow_ma)
+    # Tick mode passes market_df already built; minute mode reads the CSV.
+    if market_df is None:
+        if market_file is None:
+            raise ValueError("No market data was provided.")
+        market_df = load_market(market_file, fast_ma, slow_ma)
 
-    # For BOVESPA, try to keep only the selected symbol if identifiable.
-    if selected_root == "BOVESPA":
+    # For BOVESPA, keep only the symbol present in the data file, if identifiable.
+    if selected_root == "BOVESPA" and "Asset" in market_df.columns:
         unique_assets = (
-            market_df["Asset"]
-            .astype(str)
-            .str.strip()
-            .replace({"": np.nan})
-            .dropna()
-            .str.upper()
-            .unique()
-            .tolist()
+            market_df["Asset"].astype(str).str.strip().str.upper()
+            .replace({"": np.nan, "NAN": np.nan}).dropna().unique().tolist()
         )
         if len(unique_assets) == 1:
             asset = unique_assets[0]
             trades = trades[trades["Ativo"].astype(str).str.upper() == asset].copy().reset_index(drop=True)
             if trades.empty:
                 raise ValueError(
-                    f"The selected BOVESPA file appears to be for {asset}, "
+                    f"The data file appears to be for {asset}, "
                     f"but no matching trades were found in {trades_file.name}."
                 )
 
-    markets = {selected_root: market_df}
-    return trades, markets
+    return trades, {selected_root: market_df}

@@ -20,11 +20,13 @@ from tkinter import ttk, messagebox
 import pandas as pd
 
 import config
-from data_loader import load_all
-from charting import open_trade_chart
+from data_loader import load_all, add_market_indicators
+from datetime import datetime
+from charting import open_trade_chart, open_day_chart, open_scalp_chart
 from reviews import load_reviews, save_review, merge_reviews
 from stats import make_stats_report
 from file_picker import ask_for_files
+import tick_loader
 
 
 class TradeReviewApp(tk.Tk):
@@ -46,6 +48,8 @@ class TradeReviewApp(tk.Tk):
         self._build_ui()
         self.after(100, self.load_data)
 
+        self.tick_parquet = None
+
     def _build_ui(self):
         top = ttk.Frame(self, padding=8)
         top.pack(fill=tk.X)
@@ -55,6 +59,8 @@ class TradeReviewApp(tk.Tk):
         ttk.Button(top, text="Reload files", command=self.load_data).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Show stats", command=self.show_stats).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Open selected chart", command=self.open_selected_chart).pack(side=tk.RIGHT, padx=3)
+
+        ttk.Button(top, text="Open day chart", command=self.open_day_chart).pack(side=tk.RIGHT, padx=3)
 
         filters = ttk.Frame(self, padding=(8, 2, 8, 8))
         filters.pack(fill=tk.X)
@@ -76,6 +82,11 @@ class TradeReviewApp(tk.Tk):
                            values=["All", "Unreviewed", "Reviewed"], width=11, state="readonly")
         rev.pack(side=tk.LEFT, padx=(4, 14))
         rev.bind("<<ComboboxSelected>>", lambda e: self.apply_filters())
+
+        ttk.Label(filters, text="Day:").pack(side=tk.LEFT)
+        self.day_var = tk.StringVar(value="")
+        self.day_combo = ttk.Combobox(filters, textvariable=self.day_var, values=[], width=12, state="readonly")
+        self.day_combo.pack(side=tk.LEFT, padx=(4, 14))
 
         ttk.Label(filters, text="Tip: single-click to select/review; double-click to open the chart.").pack(side=tk.LEFT, padx=15)
 
@@ -152,15 +163,35 @@ class TradeReviewApp(tk.Tk):
             self.status_var.set("Load cancelled.")
             return
 
-        trades_file, market_choice, market_file = choice
-        self.current_trades_file = trades_file
-        self.current_market_choice = market_choice
-        self.current_market_file = market_file
+        # file_picker now returns: trades_file, market_choice, data_file, source
+        trades_file, market_choice, data_file, source = choice
 
         try:
-            self.status_var.set("Reading selected trade and market files...")
+            self.tick_parquet = None
+            market_df = None
+
+            if source == "tick":
+                self.status_var.set("Preparing tick file (first time may take a while)...")
+                self.update_idletasks()
+                self.tick_parquet = tick_loader.ensure_parquet(data_file)
+
+                self.status_var.set("Building 1-minute bars from tick file...")
+                self.update_idletasks()
+                minute_df = tick_loader.minute_bars(self.tick_parquet)
+                market_df = add_market_indicators(minute_df, config.MA_FAST, config.MA_SLOW)
+
+            self.status_var.set("Reading trades...")
             self.update_idletasks()
-            trades, markets = load_all(trades_file, market_choice, market_file, config.MA_FAST, config.MA_SLOW)
+
+            trades, markets = load_all(
+                trades_file=trades_file,
+                market_choice=market_choice,
+                market_file=None if source == "tick" else data_file,
+                fast_ma=config.MA_FAST,
+                slow_ma=config.MA_SLOW,
+                market_df=market_df,
+            )
+
             self.markets = markets
             self.reviews = load_reviews(config.REVIEWS_FILE)
             self.trades = merge_reviews(trades, self.reviews)
@@ -171,10 +202,11 @@ class TradeReviewApp(tk.Tk):
             root = next(iter(markets.keys()))
             self.status_var.set(
                 f"Loaded {len(self.trades)} trades | {market_choice} bars: {len(markets[root]):,} | "
-                f"Trades: {trades_file.name} | Data: {market_file.name} | Reviews: {config.REVIEWS_FILE.name}"
+                f"Source: {'Tick CSV' if source == 'tick' else '1-minute CSV'}"
             )
         except Exception as exc:
-            messagebox.showerror("Could not load files", f"{exc}")
+            self.tick_parquet = None
+            messagebox.showerror("Could not load files", str(exc))
             self.status_var.set("Load failed.")
 
     def update_summary(self):
@@ -230,6 +262,7 @@ class TradeReviewApp(tk.Tk):
                 f"{int(r.TradeNoDay)}/{int(r.TradesDay)}", r.GapPrev, process_short, r.mistake_tag,
             )
             self.tree.insert("", tk.END, iid=r.trade_id, values=vals, tags=(r.Outcome,))
+            self._refresh_day_values()
 
     def selected_trade(self):
         sel = self.tree.selection()
@@ -252,6 +285,7 @@ class TradeReviewApp(tk.Tk):
         self.status_var.set(
             f"Selected {trade.Ativo} {trade.EntryDT:%d/%m/%Y %H:%M:%S} | {trade.Side} | P/L R$ {trade.PL:.2f} | Double-click or use Open selected chart."
         )
+        self.day_var.set(trade.EntryDT.strftime("%d/%m/%Y"))
 
     def _chart_trade_ids_in_current_order(self):
         """Return trade IDs exactly as they are currently displayed in the table."""
@@ -283,6 +317,19 @@ class TradeReviewApp(tk.Tk):
         if trade is None:
             messagebox.showinfo("Select a trade", "Select a trade in the table first.")
             return
+
+        # If tick file is loaded AND trade is short, use scalp chart
+        if self.tick_parquet is not None and float(trade.DurationSec) <= config.SCALP_AUTO_MAX_SEC:
+            try:
+                tick_size = config.TICK_SIZE.get(trade.Root, 0.01)
+                bars, v0, v1 = tick_loader.prepare_scalp_bars(self.tick_parquet, trade, tick_size)
+                open_scalp_chart(self, trade, bars, v0, v1, tick_size)
+                return
+            except Exception as exc:
+                messagebox.showerror("Scalp chart error", str(exc))
+                return
+
+        # Otherwise fallback to normal chart
         market = self.markets.get(trade.Root)
         if market is None:
             messagebox.showerror("No data", f"No market data loaded for {trade.Root}.")
@@ -303,6 +350,62 @@ class TradeReviewApp(tk.Tk):
             has_next=pos < total - 1,
             position_text=f"Trade {pos + 1} of {total} in current list",
         )
+
+    def _day_values(self):
+        if self.trades.empty:
+            return []
+        return [d.strftime("%d/%m/%Y") for d in sorted(self.trades["Date"].unique())]
+
+    def _refresh_day_values(self):
+        values = self._day_values()
+        self.day_combo.configure(values=values)
+        if not values:
+            self.day_var.set("")
+        elif self.day_var.get() not in values:
+            self.day_var.set(values[-1])  # default: most recent day
+
+    def open_day_chart(self, day_text=None):
+        values = self._day_values()
+        day_text = day_text or self.day_var.get()
+        if not day_text or day_text not in values:
+            messagebox.showinfo("Select a day", "Choose a day in the Day dropdown first.")
+            return
+
+        session_date = datetime.strptime(day_text, "%d/%m/%Y").date()
+        # Use ALL trades of that day (ignores the Outcome/Review filters).
+        day_trades = self.view_df[self.view_df["Date"] == session_date]
+        if day_trades.empty:
+            messagebox.showinfo("No trades", f"No trades on {day_text}.")
+            return
+
+        root = day_trades.iloc[0]["Root"]
+        market = self.markets.get(root)
+        if market is None:
+            messagebox.showerror("No data", f"No market data loaded for {root}.")
+            return
+
+        pos = values.index(day_text)
+        open_day_chart(
+            self, market, day_trades, session_date,
+            on_previous=lambda w: self._navigate_day(day_text, -1, w),
+            on_next=lambda w: self._navigate_day(day_text, +1, w),
+            has_previous=pos > 0,
+            has_next=pos < len(values) - 1,
+            position_text=f"Day {pos + 1} of {len(values)}  ({day_text})",
+        )
+
+    def _navigate_day(self, current_text, direction, chart_window):
+        values = self._day_values()
+        if current_text not in values:
+            return
+        target = values.index(current_text) + direction
+        if target < 0 or target >= len(values):
+            return
+        if chart_window is not None and chart_window.winfo_exists():
+            chart_window.destroy()
+        self.day_var.set(values[target])
+        self.open_day_chart(values[target])
+
 
     def save_current_review(self):
         trade = self.selected_trade()
