@@ -351,6 +351,24 @@ class TradeReviewApp(tk.Tk):
             position_text=f"Trade {pos + 1} of {total} in current list",
         )
 
+        group_df = None
+        if "PositionId" in self.trades.columns:
+            pid = trade.get("PositionId", None)
+            if pd.notna(pid) and str(pid).strip():
+                same = self.trades[self.trades["PositionId"] == pid].copy()
+                if len(same) > 1:
+                    group_df = same.sort_values("ExitDT").reset_index(drop=True)
+
+        open_trade_chart(
+            self, market, trade,
+            on_previous=lambda chart_win: self._navigate_chart(trade.trade_id, -1, chart_win),
+            on_next=lambda chart_win: self._navigate_chart(trade.trade_id, +1, chart_win),
+            has_previous=pos > 0,
+            has_next=pos < total - 1,
+            position_text=f"Trade {pos + 1} of {total} in current list",
+            trade_group=group_df,
+        )
+
     def _day_values(self):
         if self.trades.empty:
             return []

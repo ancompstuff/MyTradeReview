@@ -146,7 +146,6 @@ def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, 
     entry_color = "#15803d" if is_long else "#b91c1c"
     exit_color = "#b91c1c" if is_long else "#15803d"
 
-    # ENTRY Box pointing directly to trade entry level on candles
     ax.annotate(
         entry_text,
         xy=(entry_x, entry_y), xycoords="data",
@@ -157,7 +156,6 @@ def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, 
         zorder=8,
     )
 
-    # EXIT Box pointing directly to trade exit level on candles
     ax.annotate(
         exit_text,
         xy=(exit_x, exit_y), xycoords="data",
@@ -169,8 +167,202 @@ def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, 
     )
 
 
+def _create_group_trade_figure(market: pd.DataFrame, selected_trade: pd.Series, group_df: pd.DataFrame):
+    """
+    One ENTRY (group) + multiple EXIT legs on same chart.
+    `group_df` must contain only legs from same PositionId.
+    """
+    group_df = group_df.sort_values("ExitDT").reset_index(drop=True)
+    root = selected_trade["Root"]
+    side = selected_trade["Side"]
+
+    entry_dt = pd.to_datetime(group_df["EntryDT"].min())
+    entry_price = float(group_df["EntryPrice"].iloc[0])  # shared by loader design
+    session_date = entry_dt.date()
+
+    day = market[market["SessionDate"] == session_date].copy().reset_index(drop=True)
+    if day.empty:
+        raise ValueError(f"No {root} 1-minute data found for {session_date:%d/%m/%Y}.")
+
+    if "RSI14" not in day.columns:
+        day["RSI14"] = _rsi(day["Close"], RSI_PERIOD)
+    day["MA80"] = day["Close"].rolling(MA_LONG_PERIOD, min_periods=1).mean()
+
+    typical_price = (day["High"] + day["Low"] + day["Close"]) / 3.0
+    w = day["Quantity"].fillna(0).clip(lower=0)
+    day["VWAP"] = (typical_price * w).cumsum().div(w.cumsum().replace(0, np.nan)).ffill()
+
+    last_exit_dt = pd.to_datetime(group_df["ExitDT"].max())
+    entry_pos = _find_bar_pos(day, entry_dt)
+    last_exit_pos = _find_bar_pos(day, last_exit_dt)
+
+    start_time = entry_dt - pd.Timedelta(minutes=PRE_ENTRY_MINUTES)
+    candidate = np.flatnonzero(day["DateTime"].values >= np.datetime64(start_time.floor("min")))
+    start_pos = int(candidate[0]) if len(candidate) else 0
+    start_pos = min(start_pos, entry_pos)
+    end_pos = min(len(day) - 1, last_exit_pos + POST_EXIT_BARS)
+
+    window = day.iloc[start_pos:end_pos + 1].copy().reset_index(drop=True)
+
+    fig = Figure(figsize=FIGSIZE, dpi=FIG_DPI)
+    gs = fig.add_gridspec(4, 1, height_ratios=[0.8, 6.3, 1.3, 0.75], hspace=0.03)
+    axr = fig.add_subplot(gs[0])
+    ax = fig.add_subplot(gs[1], sharex=axr)
+    axv = fig.add_subplot(gs[2], sharex=axr)
+    axi = fig.add_subplot(gs[3])
+    axi.axis("off")
+
+    x = np.arange(len(window))
+    candle_width = 0.66
+
+    axr.plot(x, window["RSI14"], linewidth=1.0, color="#7c3aed")
+    axr.axhline(70, color="#b91c1c", linewidth=0.8, linestyle="--")
+    axr.axhline(30, color="#15803d", linewidth=0.8, linestyle="--")
+    axr.set_ylim(0, 100)
+    axr.set_ylabel("RSI", fontsize=8)
+    axr.tick_params(axis="y", labelsize=8)
+
+    price_span = max(window["High"].max() - window["Low"].min(), 1.0)
+    min_body = price_span * 0.00035
+    for i, row in window.iterrows():
+        o, h, l, c = row["Open"], row["High"], row["Low"], row["Close"]
+        ax.vlines(i, l, h, color="black", linewidth=0.8, zorder=2)
+        lower = min(o, c)
+        height = max(abs(c - o), min_body)
+        face = "white" if c >= o else "black"
+        ax.add_patch(Rectangle((i - candle_width / 2, lower), candle_width, height,
+                               facecolor=face, edgecolor="black", linewidth=0.8, zorder=3))
+
+    ax.plot(x, window["MA9"], linewidth=1.3, label="MA 9", color="#d97706")
+    ax.plot(x, window["MA20"], linewidth=1.3, label="MA 20", color="#2563eb")
+    ax.plot(x, window["MA80"], linewidth=1.25, label="MA 80", color="#111827")
+    ax.plot(x, window["VWAP"], linewidth=2, label="Daily VWAP", color="yellow")
+    ax.plot(x, window["DayHighKnown"], linewidth=1.0, label="Day high", color="#15803d")
+    ax.plot(x, window["DayLowKnown"], linewidth=1.0, label="Day low", color="#991b1b")
+
+    prev_high = window["PrevHigh"].dropna()
+    prev_low = window["PrevLow"].dropna()
+    if not prev_high.empty:
+        ax.axhline(prev_high.iloc[0], linestyle="--", linewidth=1.0, color="#7e22ce", label="Prev session H/L")
+    if not prev_low.empty:
+        ax.axhline(prev_low.iloc[0], linestyle="--", linewidth=1.0, color="#7e22ce")
+
+    entry_x = _fractional_x(window, entry_dt)
+    entry_bar = day.iloc[entry_pos]
+    candle_entry_p = float(entry_bar["Open"])
+
+    is_long = side == "LONG"
+    leg_color = "#15803d" if is_long else "#b91c1c"
+
+    # draw each exit leg from shared entry
+    leg_pls = []
+    for idx, leg in group_df.iterrows():
+        exit_dt = pd.to_datetime(leg["ExitDT"])
+        exit_px = float(leg["ExitPrice"])
+        exit_x = _fractional_x(window, exit_dt)
+
+        pts_change = (exit_px - entry_price) if is_long else (entry_price - exit_px)
+        candle_exit_p = candle_entry_p + (pts_change if is_long else -pts_change)
+
+        box_x = entry_x
+        box_w = max(exit_x - entry_x, 0.22)
+        box_y = min(candle_entry_p, candle_exit_p)
+        box_h = max(abs(candle_exit_p - candle_entry_p), price_span * 0.006)
+
+        pl = float(leg["PL"])
+        leg_pls.append(pl)
+        color = "#15803d" if pl > 0 else "#b91c1c" if pl < 0 else "#6b7280"
+
+        ax.add_patch(Rectangle(
+            (box_x, box_y), box_w, box_h,
+            facecolor=color, alpha=0.18,
+            edgecolor=color, linestyle="--", linewidth=1.2, zorder=4
+        ))
+
+        ax.plot([entry_x, exit_x], [candle_entry_p, candle_exit_p], color=color, linewidth=1.8, zorder=5)
+        ax.scatter([exit_x], [candle_exit_p], s=55, marker="X", color="#111827",
+                   edgecolor="white", linewidth=0.5, zorder=6)
+        ax.annotate(
+            f"E{idx+1} {exit_dt:%H:%M:%S}  {_price_fmt(root, exit_px)}  ({pl:+.2f})",
+            xy=(exit_x, candle_exit_p),
+            xytext=(6, 10 if pl >= 0 else -14),
+            textcoords="offset points",
+            fontsize=7.5,
+            ha="left",
+            va="bottom" if pl >= 0 else "top",
+            bbox=dict(boxstyle="round,pad=0.15", fc="white", ec=color, alpha=0.9),
+            arrowprops=dict(arrowstyle="-", lw=0.7, color=color),
+            zorder=8
+        )
+
+    # single entry marker
+    ax.scatter([entry_x], [candle_entry_p], s=90, marker="^" if is_long else "v",
+               color=leg_color, edgecolor="black", linewidth=0.6, zorder=7)
+    ax.annotate(
+        f"ENTRY {entry_dt:%H:%M:%S}  {_price_fmt(root, entry_price)}",
+        xy=(entry_x, candle_entry_p),
+        xytext=(-8, 26 if is_long else -26),
+        textcoords="offset points",
+        fontsize=8.5,
+        ha="right",
+        va="bottom" if is_long else "top",
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=leg_color, alpha=0.95),
+        arrowprops=dict(arrowstyle="->", lw=0.9, color=leg_color),
+        zorder=9
+    )
+
+    visible_low = float(window["Low"].min())
+    visible_high = float(window["High"].max())
+    visible_span = max(visible_high - visible_low, 1.0)
+    ax.set_ylim(visible_low - visible_span * 0.05, visible_high + visible_span * 0.16)
+    ax.set_ylabel("Price")
+    ax.legend(loc="upper right", fontsize=8, ncol=4, framealpha=0.9)
+
+    volumes = window["Quantity"].fillna(0)
+    axv.bar(x, volumes, width=0.66, color="#6b7280", align="center")
+    axv.set_ylabel("Qty")
+
+    step = max(1, math.ceil(len(window) / 12))
+    ticks = list(range(0, len(window), step))
+    if len(window) - 1 not in ticks:
+        ticks.append(len(window) - 1)
+    labels = [window.iloc[i]["DateTime"].strftime("%H:%M") for i in ticks]
+    axv.set_xticks(ticks)
+    axv.set_xticklabels(labels, fontsize=8)
+    axr.set_xticks(ticks)
+    ax.tick_params(labelbottom=False)
+    axr.tick_params(labelbottom=False)
+
+    for axis in (axr, ax, axv):
+        axis.set_axisbelow(True)
+        axis.grid(True, axis="y", alpha=0.18)
+        axis.grid(True, axis="x", alpha=0.11)
+        axis.margins(x=0.01)
+
+    total_pl = float(np.nansum(leg_pls))
+    qty_group = len(group_df)
+    wins = int((group_df["PL"] > 0).sum())
+    losses = int((group_df["PL"] < 0).sum())
+
+    result_word = "WIN" if total_pl > 0 else "LOSS" if total_pl < 0 else "FLAT"
+    fig.suptitle(
+        f"{selected_trade['Ativo']}  {entry_dt:%d/%m/%Y}   {side}   "
+        f"Qty group {qty_group}   Group P/L R$ {total_pl:.2f} ({result_word})   "
+        f"Entry {entry_dt:%H:%M:%S}  Last exit {last_exit_dt:%H:%M:%S}",
+        x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985
+    )
+
+    info_line = (
+        f"Position legs: {qty_group}     Wins: {wins}     Losses: {losses}     "
+        f"Best leg: R$ {group_df['PL'].max():.2f}     Worst leg: R$ {group_df['PL'].min():.2f}"
+    )
+    axi.text(0.01, 0.5, info_line, va="center", ha="left", fontsize=9.2, transform=axi.transAxes)
+
+    fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.055, hspace=0.10)
+    return fig
+
+
 def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
-    """Create chart figure with entry-to-exit price/time box anchored directly to candle price action."""
     day, window, entry_bar_pos, exit_bar_pos = get_trade_window(market, trade)
     metrics = trade_metrics(day, trade)
     root = trade["Root"]
@@ -186,7 +378,6 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
     x = np.arange(len(window))
     candle_width = 0.66
 
-    # RSI Band
     axr.plot(x, window["RSI14"], linewidth=1.0, color="#7c3aed")
     axr.axhline(70, color="#b91c1c", linewidth=0.8, linestyle="--")
     axr.axhline(30, color="#15803d", linewidth=0.8, linestyle="--")
@@ -194,7 +385,6 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
     axr.set_ylabel("RSI", fontsize=8)
     axr.tick_params(axis="y", labelsize=8)
 
-    # Candlesticks
     price_span = max(window["High"].max() - window["Low"].min(), 1.0)
     min_body = price_span * 0.00035
     for i, row in window.iterrows():
@@ -206,7 +396,6 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
         ax.add_patch(Rectangle((i - candle_width / 2, lower), candle_width, height,
                                facecolor=face, edgecolor="black", linewidth=0.8, zorder=3))
 
-    # Moving Averages & Levels
     ax.plot(x, window["MA9"], linewidth=1.3, label="MA 9", color="#d97706")
     ax.plot(x, window["MA20"], linewidth=1.3, label="MA 20", color="#2563eb")
     ax.plot(x, window["MA80"], linewidth=1.25, label="MA 80", color="#111827")
@@ -221,19 +410,15 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
     if not prev_low.empty:
         ax.axhline(prev_low.iloc[0], linestyle="--", linewidth=1.0, color="#7e22ce")
 
-    # Time coordinates
     entry_x = _fractional_x(window, trade["EntryDT"])
     exit_x = _fractional_x(window, trade["ExitDT"])
 
-    # Candle price anchoring logic:
-    # 1. Take entry bar Open price on the chart as the visual entry baseline
     entry_bar = day.iloc[entry_bar_pos]
     candle_entry_p = float(entry_bar["Open"])
 
-    # 2. Add the actual points realized/lost in the trade to determine visual exit level on candles
     is_long = trade["Side"] == "LONG"
     pts_change = (float(trade["ExitPrice"]) - float(trade["EntryPrice"])) if is_long else (
-                float(trade["EntryPrice"]) - float(trade["ExitPrice"]))
+            float(trade["EntryPrice"]) - float(trade["ExitPrice"]))
     candle_exit_p = candle_entry_p + (pts_change if is_long else -pts_change)
 
     box_x = entry_x
@@ -251,10 +436,8 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
     )
     ax.add_patch(trade_box)
 
-    # ENTRY / EXIT text annotations pointing directly to the candle entry & exit prices
     _annotate_trade_points(ax, trade, entry_x, exit_x, candle_entry_p, candle_exit_p, len(window))
 
-    # Y-axis bounds lock strictly to the candle window
     visible_low = float(window["Low"].min())
     visible_high = float(window["High"].max())
     visible_span = max(visible_high - visible_low, 1.0)
@@ -268,10 +451,8 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
         x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985
     )
     ax.set_ylabel("Price")
-
     ax.legend(loc="upper right", fontsize=8, ncol=4, framealpha=0.9)
 
-    # Volume Subplot
     volumes = window["Quantity"].fillna(0)
     axv.bar(x, volumes, width=0.66, color="#6b7280", align="center")
     axv.set_ylabel("Qty")
@@ -308,16 +489,19 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
              family="sans-serif", transform=axi.transAxes)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.055, hspace=0.10)
-
     return fig
 
 
 def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
                      on_previous=None, on_next=None,
                      has_previous: bool = False, has_next: bool = False,
-                     position_text: str = ""):
+                     position_text: str = "",
+                     trade_group: pd.DataFrame | None = None):
     try:
-        fig = create_trade_figure(market, trade)
+        if trade_group is not None and len(trade_group) > 1:
+            fig = _create_group_trade_figure(market, trade, trade_group)
+        else:
+            fig = create_trade_figure(market, trade)
     except Exception as exc:
         messagebox.showerror("Chart error", str(exc), parent=parent)
         return
@@ -358,6 +542,7 @@ def open_trade_chart(parent, market: pd.DataFrame, trade: pd.Series,
     toolbar.update()
     win.focus_set()
 
+
 def _prepare_day(market: pd.DataFrame, session_date) -> pd.DataFrame:
     day = market[market["SessionDate"] == session_date].copy().reset_index(drop=True)
     if day.empty:
@@ -377,7 +562,6 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
                    on_previous=None, on_next=None,
                    has_previous: bool = False, has_next: bool = False,
                    position_text: str = ""):
-    """Draw the full session with every trade of that day marked on it."""
     try:
         day = _prepare_day(market, session_date)
     except Exception as exc:
@@ -429,7 +613,6 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
     x = np.arange(n)
     candle_width = 0.66
 
-    # RSI
     axr.plot(x, day["RSI14"], linewidth=1.0, color="#7c3aed")
     axr.axhline(70, color="#b91c1c", linewidth=0.8, linestyle="--")
     axr.axhline(30, color="#15803d", linewidth=0.8, linestyle="--")
@@ -437,7 +620,6 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
     axr.set_ylabel("RSI", fontsize=8)
     axr.tick_params(axis="y", labelsize=8)
 
-    # Candles
     price_span = max(day["High"].max() - day["Low"].min(), 1.0)
     min_body = price_span * 0.00035
     ax.vlines(x, day["Low"], day["High"], color="black", linewidth=0.7, zorder=2)
@@ -462,7 +644,6 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
     if not prev_low.empty:
         ax.axhline(prev_low.iloc[0], linestyle="--", linewidth=1.0, color="#7e22ce")
 
-    # Trades
     cum = 0.0
     cum_x = [0.0]
     cum_y = [0.0]
@@ -499,11 +680,9 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
     ax.set_ylabel("Price")
     ax.legend(loc="upper left", fontsize=8, ncol=4, framealpha=0.9)
 
-    # Volume
     axv.bar(x, day["Quantity"].fillna(0), width=0.66, color="#6b7280", align="center")
     axv.set_ylabel("Qty")
 
-    # Cumulative P/L
     cum_x.append(float(n - 1))
     cum_y.append(cum)
     axp.step(cum_x, cum_y, where="post", color="#2563eb", linewidth=1.5)
@@ -513,7 +692,6 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
     axp.set_ylabel("Cum P/L R$", fontsize=8)
     axp.tick_params(axis="y", labelsize=8)
 
-    # Shared time axis
     step = max(1, math.ceil(n / 14))
     ticks = list(range(0, n, step))
     if n - 1 not in ticks:
@@ -549,6 +727,7 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
     toolbar = NavigationToolbar2Tk(canvas, win)
     toolbar.update()
     win.focus_set()
+
 
 def _runs(mask):
     out, start = [], None
@@ -590,7 +769,7 @@ def _flow_summary_lines(bars: pd.DataFrame, trade: pd.Series, bar_sec: float):
     entry = pd.Timestamp(trade["EntryDT"])
     entry_bar = entry.floor(pd.Timedelta(seconds=bar_sec))
     sign = 1 if trade["Side"] == "LONG" else -1
-    before = bars[bars["DateTime"] < entry_bar]   # strictly before the entry second
+    before = bars[bars["DateTime"] < entry_bar]
     if before.empty:
         return ["No flow data before entry."]
 
@@ -651,7 +830,6 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     def xpos(dt):
         return (pd.Timestamp(dt) - view_start).total_seconds() / bar_sec
 
-    # Candles
     span = max(v["High"].max() - v["Low"].min(), tick_size)
     min_body = max(span * 0.002, tick_size * 0.15)
     w = 0.7
@@ -662,7 +840,6 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
                                facecolor="white" if c >= o else "black",
                                edgecolor="black", linewidth=0.5, zorder=3))
 
-    # Absorption zones
     for s, e in _runs(v["BullS"].values):
         for a in (ax, axv):
             a.axvspan(s, e, color="#0891b2", alpha=0.13, zorder=0)
@@ -674,7 +851,6 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     for s, e in _runs(v["BearL"].values):
         ax.axvspan(s, e, ymin=0.95, ymax=1.0, color="#c026d3", alpha=0.55, zorder=1)
 
-    # Trade markers
     ex, xx = xpos(trade["EntryDT"]), xpos(trade["ExitDT"])
     long_trade = trade["Side"] == "LONG"
     color = "#15803d" if trade["Side"] == "LONG" else "#b91c1c"
@@ -702,13 +878,11 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
         Patch(color="#c026d3", alpha=0.4, label="Buying absorbed (bearish)"),
     ], loc="upper left", fontsize=8, framealpha=0.9)
 
-    # Aggressor volume
     axv.bar(x, v["BuyVol"], width=0.85, color="#15803d")
     axv.bar(x, -v["SellVol"], width=0.85, color="#b91c1c")
     axv.axhline(0, color="#374151", linewidth=0.6)
     axv.set_ylabel("Aggr vol", fontsize=8)
 
-    # Delta and cumulative delta
     axd.bar(x, v["Delta"], width=0.85, color=np.where(v["Delta"] >= 0, "#15803d", "#b91c1c"))
     axd.axhline(0, color="#374151", linewidth=0.6)
     axd.set_ylabel("Delta", fontsize=8)
