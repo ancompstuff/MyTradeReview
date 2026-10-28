@@ -64,7 +64,7 @@ TICK_ENCODING = "latin-1"          # ISO 8859-1
 
 TICK_SIZE = {"WIN": 5.0, "WDO": 0.5, "BOVESPA": 0.01}
 
-SCALP_AUTO_MAX_SEC = 300           # trades up to 5 min open the scalp chart by default
+SCALP_AUTO_MAX_SEC = 500           # trades up to 5 min open the scalp chart by default
 SCALP_PRE_SEC = 180                # seconds shown before entry
 SCALP_POST_SEC = 60                # seconds shown after exit
 SCALP_MIN_VIEW_SEC = 45            # minimum seconds shown after entry

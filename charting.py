@@ -26,6 +26,11 @@ def _price_fmt(root: str, value: float) -> str:
     return f"{value:,.1f}"
 
 
+def _ts_ms(dt) -> str:
+    dt = pd.Timestamp(dt)
+    return f"{dt:%H:%M:%S}.{dt.microsecond // 1000:03d}"
+
+
 def _find_bar_pos(day: pd.DataFrame, dt: pd.Timestamp) -> int:
     minute = pd.Timestamp(dt).floor("min")
     exact = np.flatnonzero(day["DateTime"].values == np.datetime64(minute))
@@ -130,8 +135,8 @@ def trade_metrics(day: pd.DataFrame, trade: pd.Series):
 def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, entry_y: float, exit_y: float,
                            n_bars: int):
     root = trade["Root"]
-    entry_text = f"ENTRY  {trade['EntryDT']:%H:%M:%S}   {_price_fmt(root, trade['EntryPrice'])}"
-    exit_text = f"EXIT  {trade['ExitDT']:%H:%M:%S}   {_price_fmt(root, trade['ExitPrice'])}"
+    entry_text = f"ENTRY  {_ts_ms(trade['EntryDT'])}   {_price_fmt(root, trade['EntryPrice'])}"
+    exit_text = f"EXIT  {_ts_ms(trade['ExitDT'])}   {_price_fmt(root, trade['ExitPrice'])}"
 
     trans = blended_transform_factory(ax.transData, ax.transAxes)
 
@@ -169,15 +174,14 @@ def _annotate_trade_points(ax, trade: pd.Series, entry_x: float, exit_x: float, 
 
 def _create_group_trade_figure(market: pd.DataFrame, selected_trade: pd.Series, group_df: pd.DataFrame):
     """
-    One ENTRY (group) + multiple EXIT legs on same chart.
-    `group_df` must contain only legs from same PositionId.
+    One ENTRY + ALL exits on same chart.
     """
     group_df = group_df.sort_values("ExitDT").reset_index(drop=True)
     root = selected_trade["Root"]
     side = selected_trade["Side"]
 
     entry_dt = pd.to_datetime(group_df["EntryDT"].min())
-    entry_price = float(group_df["EntryPrice"].iloc[0])  # shared by loader design
+    entry_price = float(group_df["EntryPrice"].iloc[0])
     session_date = entry_dt.date()
 
     day = market[market["SessionDate"] == session_date].copy().reset_index(drop=True)
@@ -248,21 +252,17 @@ def _create_group_trade_figure(market: pd.DataFrame, selected_trade: pd.Series, 
         ax.axhline(prev_low.iloc[0], linestyle="--", linewidth=1.0, color="#7e22ce")
 
     entry_x = _fractional_x(window, entry_dt)
-    entry_bar = day.iloc[entry_pos]
-    candle_entry_p = float(entry_bar["Open"])
+    candle_entry_p = entry_price  # real entry price
 
     is_long = side == "LONG"
-    leg_color = "#15803d" if is_long else "#b91c1c"
+    entry_color = "#15803d" if is_long else "#b91c1c"
 
-    # draw each exit leg from shared entry
     leg_pls = []
     for idx, leg in group_df.iterrows():
         exit_dt = pd.to_datetime(leg["ExitDT"])
         exit_px = float(leg["ExitPrice"])
         exit_x = _fractional_x(window, exit_dt)
-
-        pts_change = (exit_px - entry_price) if is_long else (entry_price - exit_px)
-        candle_exit_p = candle_entry_p + (pts_change if is_long else -pts_change)
+        candle_exit_p = exit_px  # real exit price
 
         box_x = entry_x
         box_w = max(exit_x - entry_x, 0.22)
@@ -283,7 +283,7 @@ def _create_group_trade_figure(market: pd.DataFrame, selected_trade: pd.Series, 
         ax.scatter([exit_x], [candle_exit_p], s=55, marker="X", color="#111827",
                    edgecolor="white", linewidth=0.5, zorder=6)
         ax.annotate(
-            f"E{idx+1} {exit_dt:%H:%M:%S}  {_price_fmt(root, exit_px)}  ({pl:+.2f})",
+            f"E{idx + 1} {_ts_ms(exit_dt)}  {_price_fmt(root, exit_px)}  ({pl:+.2f})",
             xy=(exit_x, candle_exit_p),
             xytext=(6, 10 if pl >= 0 else -14),
             textcoords="offset points",
@@ -295,19 +295,18 @@ def _create_group_trade_figure(market: pd.DataFrame, selected_trade: pd.Series, 
             zorder=8
         )
 
-    # single entry marker
     ax.scatter([entry_x], [candle_entry_p], s=90, marker="^" if is_long else "v",
-               color=leg_color, edgecolor="black", linewidth=0.6, zorder=7)
+               color=entry_color, edgecolor="black", linewidth=0.6, zorder=7)
     ax.annotate(
-        f"ENTRY {entry_dt:%H:%M:%S}  {_price_fmt(root, entry_price)}",
+        f"ENTRY {_ts_ms(entry_dt)}  {_price_fmt(root, entry_price)}",
         xy=(entry_x, candle_entry_p),
         xytext=(-8, 26 if is_long else -26),
         textcoords="offset points",
         fontsize=8.5,
         ha="right",
         va="bottom" if is_long else "top",
-        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=leg_color, alpha=0.95),
-        arrowprops=dict(arrowstyle="->", lw=0.9, color=leg_color),
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=entry_color, alpha=0.95),
+        arrowprops=dict(arrowstyle="->", lw=0.9, color=entry_color),
         zorder=9
     )
 
@@ -348,7 +347,7 @@ def _create_group_trade_figure(market: pd.DataFrame, selected_trade: pd.Series, 
     fig.suptitle(
         f"{selected_trade['Ativo']}  {entry_dt:%d/%m/%Y}   {side}   "
         f"Qty group {qty_group}   Group P/L R$ {total_pl:.2f} ({result_word})   "
-        f"Entry {entry_dt:%H:%M:%S}  Last exit {last_exit_dt:%H:%M:%S}",
+        f"Entry {_ts_ms(entry_dt)}  Last exit {_ts_ms(last_exit_dt)}",
         x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985
     )
 
@@ -489,6 +488,7 @@ def create_trade_figure(market: pd.DataFrame, trade: pd.Series):
              family="sans-serif", transform=axi.transAxes)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.055, hspace=0.10)
+
     return fig
 
 
@@ -801,17 +801,36 @@ def _flow_summary_lines(bars: pd.DataFrame, trade: pd.Series, bar_sec: float):
 def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, view_end,
                      tick_size: float, on_previous=None, on_next=None,
                      has_previous: bool = False, has_next: bool = False,
-                     position_text: str = ""):
+                     position_text: str = "", group: pd.DataFrame | None = None):
     bar_sec = float((bars["DateTime"].iloc[1] - bars["DateTime"].iloc[0]).total_seconds())
     v = bars[(bars["DateTime"] >= view_start) & (bars["DateTime"] < view_end)].reset_index(drop=True)
     if v.empty:
         messagebox.showerror("Chart error", "No tick data in the selected window.", parent=parent)
         return
 
+    legs = group.copy() if group is not None and len(group) > 0 else pd.DataFrame([trade])
+    legs["PL"] = pd.to_numeric(legs["PL"], errors="coerce").fillna(0.0)
+    legs = legs.sort_values("ExitDT").reset_index(drop=True)
+
     root = trade["Root"]
+    side = trade["Side"]
+    long_trade = side == "LONG"
+
+    entry_dt = pd.Timestamp(legs["EntryDT"].min())
+    entry_px = float(legs["EntryPrice"].iloc[0])
+    last_exit = pd.Timestamp(legs["ExitDT"].max())
+    n_legs = len(legs)
+    total_pl = float(legs["PL"].sum())
+
+    # Group exits that happen in same second and same price
+    legs["_sec"] = legs["ExitDT"].dt.floor("s")
+    exits = (legs.groupby(["_sec", "ExitPrice"], sort=False)
+             .agg(n=("PL", "size"), pl=("PL", "sum"), first=("ExitDT", "min"))
+             .reset_index().sort_values("first").reset_index(drop=True))
+
     win = tk.Toplevel(parent)
-    win.title(f"SCALP  |  {trade['Ativo']}  |  {trade['EntryDT']:%d/%m/%Y %H:%M:%S}  |  "
-              f"{trade['Side']}  |  P/L R$ {trade['PL']:.2f}")
+    win.title(f"SCALP  |  {trade['Ativo']}  |  {entry_dt:%d/%m/%Y} {_ts_ms(entry_dt)}  |  "
+              f"{side}  |  {n_legs} contract(s)  |  P/L R$ {total_pl:.2f}")
     win.geometry("1400x980")
     _add_nav_bar(win, on_previous, on_next, has_previous, has_next, position_text)
 
@@ -851,27 +870,58 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     for s, e in _runs(v["BearL"].values):
         ax.axvspan(s, e, ymin=0.95, ymax=1.0, color="#c026d3", alpha=0.55, zorder=1)
 
-    ex, xx = xpos(trade["EntryDT"]), xpos(trade["ExitDT"])
-    long_trade = trade["Side"] == "LONG"
-    color = "#15803d" if trade["Side"] == "LONG" else "#b91c1c"
-    ax.plot([ex, xx], [trade["EntryPrice"], trade["ExitPrice"]], color=color, linewidth=2, zorder=5)
-    ax.scatter([ex], [trade["EntryPrice"]], s=110, marker="^" if long_trade else "v",
-               color=color, edgecolor="black", linewidth=0.6, zorder=6)
-    ax.scatter([xx], [trade["ExitPrice"]], s=90, marker="X",
-               color="#111827", edgecolor="white", linewidth=0.6, zorder=6)
-    ax.annotate(f"ENTRY {trade['EntryDT']:%H:%M:%S}  {_price_fmt(root, trade['EntryPrice'])}",
-                xy=(ex, trade["EntryPrice"]), xytext=(-10, 28 if long_trade else -28),
-                textcoords="offset points", ha="right", fontsize=8.5,
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#374151"),
-                arrowprops=dict(arrowstyle="->", lw=0.8), zorder=8)
-    ax.annotate(f"EXIT {trade['ExitDT']:%H:%M:%S}  {_price_fmt(root, trade['ExitPrice'])}",
-                xy=(xx, trade["ExitPrice"]), xytext=(10, -28 if long_trade else 28),
-                textcoords="offset points", ha="left", fontsize=8.5,
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#374151"),
-                arrowprops=dict(arrowstyle="->", lw=0.8), zorder=8)
+    entry_color = "#15803d" if long_trade else "#b91c1c"
+    ex = xpos(entry_dt)
 
-    pad = span * 0.06
-    ax.set_ylim(v["Low"].min() - pad, v["High"].max() + pad)
+    exit_xs = []
+    for k, e in exits.iterrows():
+        xx = xpos(e["first"])
+        exit_xs.append(xx)
+        pl = float(e["pl"])
+        col = "#15803d" if pl > 0 else "#b91c1c" if pl < 0 else "#6b7280"
+        px = float(e["ExitPrice"])
+
+        ax.plot([ex, xx], [entry_px, px], color=col, linewidth=1.8, zorder=5)
+        ax.scatter([xx], [px], s=75, marker="X", color="#111827", edgecolor="white", linewidth=0.6, zorder=6)
+
+        cnt = f"x{int(e['n'])}  " if e["n"] > 1 else ""
+        label = f"{cnt}{_ts_ms(e['first'])}  {_price_fmt(root, px)}  ({pl:+.2f})"
+
+        # spread labels more aggressively when many exits cluster together
+        up = (k % 2 == 0)
+
+        x_jitter = 12 + (k % 3) * 26  # 12, 38, 64 px horizontally
+        base_y = 18 + (k // 2) * 20  # larger vertical spacing
+        y_off = base_y if up else -base_y
+
+        ax.annotate(
+            label,
+            xy=(xx, px),
+            xytext=(x_jitter, y_off),
+            textcoords="offset points",
+            ha="left",
+            va="bottom" if up else "top",
+            fontsize=8,
+            color="#111827",
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=col, alpha=0.95),
+            arrowprops=dict(arrowstyle="-", lw=0.8, color=col),
+            zorder=8
+        )
+
+    ax.scatter([ex], [entry_px], s=130, marker="^" if long_trade else "v",
+               color=entry_color, edgecolor="black", linewidth=0.7, zorder=7)
+    ax.annotate(
+        f"ENTRY {_ts_ms(entry_dt)}  {_price_fmt(root, entry_px)}" + (f"   ({n_legs} contracts)" if n_legs > 1 else ""),
+        xy=(ex, entry_px), xytext=(-12, 30 if long_trade else -30),
+        textcoords="offset points", ha="right", fontsize=9, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", fc="white", ec=entry_color, lw=1.3),
+        arrowprops=dict(arrowstyle="->", lw=1.0, color=entry_color), zorder=9
+    )
+
+    lo = min(float(v["Low"].min()), entry_px, float(exits["ExitPrice"].min()))
+    hi = max(float(v["High"].max()), entry_px, float(exits["ExitPrice"].max()))
+    pad = max(hi - lo, tick_size) * 0.08
+    ax.set_ylim(lo - pad, hi + pad)
     ax.set_ylabel("Price")
     ax.legend(handles=[
         Patch(color="#0891b2", alpha=0.4, label="Selling absorbed (bullish)"),
@@ -891,13 +941,15 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     axc.set_ylabel("Cum delta", fontsize=8)
 
     for a in (ax, axv, axd, axc):
-        a.axvline(ex, color=color, linewidth=1.0, linestyle=":")
-        a.axvline(xx, color="#111827", linewidth=1.0, linestyle=":")
+        a.axvline(ex, color=entry_color, linewidth=1.0, linestyle=":")
+        for xx in exit_xs:
+            a.axvline(xx, color="#111827", linewidth=0.7, linestyle=":")
         a.set_axisbelow(True)
         a.grid(True, axis="y", alpha=0.18)
         a.grid(True, axis="x", alpha=0.11)
         a.margins(x=0.005)
         a.tick_params(axis="y", labelsize=8)
+
     for a in (ax, axv, axd):
         a.tick_params(labelbottom=False)
 
@@ -906,13 +958,25 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     axc.set_xticks([t + 0.5 for t in ticks])
     axc.set_xticklabels([v.iloc[t]["DateTime"].strftime("%H:%M:%S") for t in ticks], fontsize=8)
 
-    result_word = "WIN" if trade["PL"] > 0 else "LOSS" if trade["PL"] < 0 else "FLAT"
+    result_word = "WIN" if total_pl > 0 else "LOSS" if total_pl < 0 else "FLAT"
+    hold_sec = (last_exit - entry_dt).total_seconds()
     fig.suptitle(
-        f"{trade['Ativo']}  {trade['EntryDT']:%d/%m/%Y}   {trade['Side']}   Qty {trade['Qty']:.0f}   "
-        f"P/L R$ {trade['PL']:.2f} ({result_word})   Hold {trade['Duration']}",
-        x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985)
+        f"{trade['Ativo']}  {entry_dt:%d/%m/%Y}   {side}   Qty {n_legs}   "
+        f"P/L R$ {total_pl:.2f} ({result_word})   Entry {_ts_ms(entry_dt)}  "
+        f"Last exit {_ts_ms(last_exit)}  Hold {hold_sec:.0f}s",
+        x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985
+    )
 
-    lines = _flow_summary_lines(bars, trade, bar_sec)
+    flow_trade = trade.copy()
+    flow_trade["EntryDT"] = entry_dt
+    lines = _flow_summary_lines(bars, flow_trade, bar_sec)
+    if n_legs > 1:
+        wins_n = int((legs["PL"] > 0).sum())
+        loss_n = int((legs["PL"] < 0).sum())
+        lines.append(
+            f"Contracts: {n_legs}   wins {wins_n}   losses {loss_n}   "
+            f"best R$ {legs['PL'].max():.2f}   worst R$ {legs['PL'].min():.2f}"
+        )
     axi.text(0.01, 0.5, "\n".join(lines), va="center", ha="left", fontsize=9.5, transform=axi.transAxes)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.05)
