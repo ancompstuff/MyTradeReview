@@ -38,21 +38,24 @@ def ensure_parquet(csv_path: Path) -> Path:
                 SELECT asset, ts, buyer, seller, price, qty, aggressor, seq
                 FROM (
                     SELECT asset,
-                           strptime(d || ' ' || t, '%d/%m/%Y %H:%M:%S') AS ts,
-                           buyer, seller, price, qty, aggressor,
+                           try_strptime(d || ' ' || t, '%d/%m/%Y %H:%M:%S') AS ts,
+                           buyer, seller,
+                           try_cast(replace(replace(trim(price_txt), '.', ''), ',', '.') AS DOUBLE) AS price,
+                           try_cast(trim(qty_txt) AS INTEGER) AS qty,
+                           aggressor,
                            row_number() OVER () AS seq
                     FROM read_csv(
                         '{_q(csv_path)}',
                         delim=';', header=false, encoding='{config.TICK_ENCODING}',
-                        decimal_separator=',', ignore_errors=true,
+                        ignore_errors=true, all_varchar=true,
                         columns={{
                             'asset': 'VARCHAR', 'd': 'VARCHAR', 't': 'VARCHAR',
-                            'buyer': 'VARCHAR', 'price': 'DOUBLE', 'qty': 'INTEGER',
+                            'buyer': 'VARCHAR', 'price_txt': 'VARCHAR', 'qty_txt': 'VARCHAR',
                             'seller': 'VARCHAR', 'aggressor': 'VARCHAR'
                         }}
                     )
                 )
-                WHERE ts IS NOT NULL AND price IS NOT NULL
+                WHERE ts IS NOT NULL AND price IS NOT NULL AND qty IS NOT NULL
                 ORDER BY ts, seq
             ) TO '{_q(tmp)}' (FORMAT PARQUET)
         """)
