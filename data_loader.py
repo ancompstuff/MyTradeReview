@@ -208,114 +208,105 @@ def _load_trades_all_operations(path: Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Detailed all_operations file missing columns: {missing}")
 
-    # Normalize text
     for c in ["Ativo", "Lado", "Status", "ClOrdID"]:
         raw[c] = raw[c].astype(str).str.strip()
 
     raw["CreateDT"] = raw["Criação"].map(_parse_dt)
     raw["UpdateDT"] = raw["Última Atualização"].map(_parse_dt)
     raw["PrecoMedio_num"] = raw["Preço Médio"].map(br_number)
-    raw["Qtd_num"] = raw["Qtd"].map(br_number)
-    raw["QtdExec_num"] = raw["Qtd Executada"].map(br_number)
 
-    # Build unit fills from parent Executada rows + immediate child Trade rows
-    fills = []
-    i = 0
-    n = len(raw)
-
+    # ---- 1) Build ORDERS: each "Executada" row + its immediate "Trade" child rows (fills) ----
+    orders = []
+    i, n = 0, len(raw)
     while i < n:
         row = raw.iloc[i]
-        status = row["Status"]
-
-        if status == "Executada" and str(row["Ativo"]).strip():
-            ativo = str(row["Ativo"]).strip()
-            root = _root_from_ativo(ativo)
-            lado = str(row["Lado"]).strip().upper()  # C / V
-            clordid = str(row["ClOrdID"]).strip() or f"row_{i}"
-
+        if row["Status"] == "Executada" and row["Ativo"]:
+            ativo = row["Ativo"]
+            lado = row["Lado"].upper()  # C / V
+            clordid = row["ClOrdID"] or f"row_{i}"
             parent_dt = row["UpdateDT"] if pd.notna(row["UpdateDT"]) else row["CreateDT"]
             parent_px = row["PrecoMedio_num"]
             parent_q = _parse_qty(row["Qtd Executada"], default=_parse_qty(row["Qtd"], default=1))
 
-            # Consume immediate child rows with Status == Trade
-            child = []
+            fills = []  # one (datetime, price) per contract
             j = i + 1
-            while j < n and str(raw.iloc[j]["Status"]).strip() == "Trade":
+            while j < n and raw.iloc[j]["Status"] == "Trade":
                 tr = raw.iloc[j]
                 tdt = tr["CreateDT"] if pd.notna(tr["CreateDT"]) else parent_dt
                 tpx = tr["PrecoMedio_num"] if pd.notna(tr["PrecoMedio_num"]) else parent_px
                 tq = _parse_qty(tr["Qtd Executada"], default=1)
                 if pd.notna(tdt) and pd.notna(tpx):
-                    child.extend([{"Ativo": ativo, "Root": root, "Lado": lado, "DT": tdt, "Price": float(tpx), "ClOrdID": clordid}] * tq)
+                    fills.extend([(tdt, float(tpx))] * tq)
                 j += 1
 
-            if not child:
-                if pd.notna(parent_dt) and pd.notna(parent_px):
-                    child.extend([{"Ativo": ativo, "Root": root, "Lado": lado, "DT": parent_dt, "Price": float(parent_px), "ClOrdID": clordid}] * parent_q)
+            if not fills and pd.notna(parent_dt) and pd.notna(parent_px):
+                fills = [(parent_dt, float(parent_px))] * parent_q
 
-            fills.extend(child)
+            if fills:
+                fills.sort(key=lambda f: f[0])
+                orders.append({
+                    "id": clordid, "ativo": ativo, "root": _root_from_ativo(ativo),
+                    "lado": lado, "fills": fills, "first_dt": fills[0][0],
+                })
             i = j
         else:
             i += 1
 
-    fills_df = pd.DataFrame(fills)
-    if fills_df.empty:
-        raise ValueError("No executable fills parsed from all_operations file.")
+    if not orders:
+        raise ValueError("No executed orders parsed from all_operations file.")
 
-    fills_df = fills_df.dropna(subset=["DT", "Price"]).sort_values("DT").reset_index(drop=True)
+    orders.sort(key=lambda o: (o["first_dt"], o["id"]))
 
-    # FIFO matching by root
-    # buy (C): closes short first, otherwise opens long
-    # sell (V): closes long first, otherwise opens short
-    open_longs = defaultdict(deque)   # each item: dict(dt, price, ativo)
-    open_shorts = defaultdict(deque)
-
+    # ---- 2) FIFO match. Entry lot = whole entry order (one time, one avg price).
+    #         Each contract exits on its own fill. ----
+    long_lots = defaultdict(deque)   # opened by C, closed by V
+    short_lots = defaultdict(deque)  # opened by V, closed by C
     trades = []
 
-    for _, f in fills_df.iterrows():
-        root = f["Root"]
-        lado = f["Lado"]
-        dt = f["DT"]
-        px = float(f["Price"])
-        ativo = f["Ativo"]
-
+    for o in orders:
+        root, lado = o["root"], o["lado"]
         if lado == "C":
-            # close short if any, else open long
-            if open_shorts[root]:
-                ent = open_shorts[root].popleft()
-                trades.append({
-                    "Ativo": ativo,
-                    "Root": root,
-                    "Lado": "V",
-                    "Side": "SHORT",
-                    "EntryDT": ent["dt"],
-                    "ExitDT": dt,
-                    "EntryPrice": float(ent["price"]),
-                    "ExitPrice": px,
-                    "Qty": 1.0,
-                    "PL": _pl_for_close(root, "SHORT", float(ent["price"]), px, 1),
-                })
-            else:
-                open_longs[root].append({"dt": dt, "price": px, "ativo": ativo})
-
+            closing_lots, opening_lots = short_lots[root], long_lots[root]
+            closed_side, closed_lado = "SHORT", "V"
         elif lado == "V":
-            # close long if any, else open short
-            if open_longs[root]:
-                ent = open_longs[root].popleft()
+            closing_lots, opening_lots = long_lots[root], short_lots[root]
+            closed_side, closed_lado = "LONG", "C"
+        else:
+            continue
+
+        opening_fills = []
+        for fdt, fpx in o["fills"]:
+            if closing_lots:
+                lot = closing_lots[0]
                 trades.append({
-                    "Ativo": ent["ativo"],
+                    "Ativo": lot["ativo"],
                     "Root": root,
-                    "Lado": "C",
-                    "Side": "LONG",
-                    "EntryDT": ent["dt"],
-                    "ExitDT": dt,
-                    "EntryPrice": float(ent["price"]),
-                    "ExitPrice": px,
+                    "Lado": closed_lado,
+                    "Side": closed_side,
+                    "EntryDT": lot["dt"],
+                    "ExitDT": fdt,
+                    "EntryPrice": lot["price"],
+                    "ExitPrice": fpx,
                     "Qty": 1.0,
-                    "PL": _pl_for_close(root, "LONG", float(ent["price"]), px, 1),
+                    "PL": _pl_for_close(root, closed_side, lot["price"], fpx, 1),
+                    "PositionId": lot["id"],
+                    "PositionQty": lot["qty"],
                 })
+                lot["remaining"] -= 1
+                if lot["remaining"] == 0:
+                    closing_lots.popleft()
             else:
-                open_shorts[root].append({"dt": dt, "price": px, "ativo": ativo})
+                opening_fills.append((fdt, fpx))
+
+        if opening_fills:
+            opening_lots.append({
+                "id": o["id"],
+                "ativo": o["ativo"],
+                "dt": opening_fills[0][0],                                   # entry time = first fill of the order
+                "price": float(np.mean([p for _, p in opening_fills])),      # avg entry price of the order
+                "qty": len(opening_fills),
+                "remaining": len(opening_fills),
+            })
 
     trades_df = pd.DataFrame(trades)
     if trades_df.empty:
@@ -325,7 +316,6 @@ def _load_trades_all_operations(path: Path) -> pd.DataFrame:
         )
 
     return _finalize_trades_df(trades_df)
-
 
 def load_trades(path: Path) -> pd.DataFrame:
     fmt = detect_trade_format(path)
