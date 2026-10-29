@@ -103,10 +103,19 @@ def _load_bars(parquet: Path, t0: pd.Timestamp, t1: pd.Timestamp, bar_sec: int) 
                    min(price) AS Low,
                    last(price ORDER BY ts, seq) AS Close,
                    sum(qty) AS Qty,
-                   sum(CASE WHEN aggressor = 'Comprador' THEN qty ELSE 0 END) AS BuyVol,
-                   sum(CASE WHEN aggressor = 'Vendedor'  THEN qty ELSE 0 END) AS SellVol,
-                   sum(CASE WHEN COALESCE(aggressor, '') NOT IN ('Comprador', 'Vendedor')
-                            THEN qty ELSE 0 END) AS OtherVol,
+                                       sum(CASE
+                            WHEN lower(trim(aggressor)) IN ('comprador', 'buy')
+                            THEN qty ELSE 0
+                        END) AS BuyVol,
+                    sum(CASE
+                            WHEN lower(trim(aggressor)) IN ('vendedor', 'sell')
+                            THEN qty ELSE 0
+                        END) AS SellVol,
+                    sum(CASE
+                            WHEN lower(trim(aggressor)) IN ('rlp', 'leilão', 'leilao')
+                                 OR COALESCE(trim(aggressor), '') = ''
+                            THEN qty ELSE 0
+                        END) AS OtherVol,
                    count(*) AS Ticks
             FROM read_parquet('{_q(parquet)}')
             WHERE ts >= ? AND ts < ?

@@ -601,12 +601,15 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
         win.bind("<Right>", lambda _e: on_next(win))
 
     fig = Figure(figsize=(14, 9.5), dpi=FIG_DPI)
-    gs = fig.add_gridspec(5, 1, height_ratios=[0.8, 6.0, 1.2, 1.5, 0.5], hspace=0.03)
+    # Extra blank row between the time axis and the summary text.
+    gs = fig.add_gridspec(
+        6, 1, height_ratios=[5.0, 1.5, 1.4, 1.6, 0.6, 1.0], hspace=0.04
+    )
     axr = fig.add_subplot(gs[0])
     ax = fig.add_subplot(gs[1], sharex=axr)
     axv = fig.add_subplot(gs[2], sharex=axr)
     axp = fig.add_subplot(gs[3], sharex=axr)
-    axi = fig.add_subplot(gs[4])
+    axi = fig.add_subplot(gs[5])
     axi.axis("off")
 
     n = len(day)
@@ -977,7 +980,7 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
             f"Contracts: {n_legs}   wins {wins_n}   losses {loss_n}   "
             f"best R$ {legs['PL'].max():.2f}   worst R$ {legs['PL'].min():.2f}"
         )
-    axi.text(0.01, 0.5, "\n".join(lines), va="center", ha="left", fontsize=9.5, transform=axi.transAxes)
+    axi.text(0.01, 0.40, "\n".join(lines), va="center", ha="left", fontsize=9.5, transform=axi.transAxes)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.05)
     canvas = FigureCanvasTkAgg(fig, master=win)
