@@ -603,12 +603,12 @@ def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, sessi
     fig = Figure(figsize=(14, 9.5), dpi=FIG_DPI)
     # Extra blank row between the time axis and the summary text.
     gs = fig.add_gridspec(
-        6, 1, height_ratios=[5.0, 1.5, 1.4, 1.6, 0.6, 1.0], hspace=0.04
+        6, 1, height_ratios=[9.0, 1.0, 1.0, 1.0, 0.5, 0.9], hspace=0.04
     )
-    axr = fig.add_subplot(gs[0])
-    ax = fig.add_subplot(gs[1], sharex=axr)
-    axv = fig.add_subplot(gs[2], sharex=axr)
-    axp = fig.add_subplot(gs[3], sharex=axr)
+    ax = fig.add_subplot(gs[0])
+    axr = fig.add_subplot(gs[1], sharex=ax)
+    axv = fig.add_subplot(gs[2], sharex=ax)
+    axp = fig.add_subplot(gs[3], sharex=ax)
     axi = fig.add_subplot(gs[5])
     axi.axis("off")
 
@@ -768,6 +768,24 @@ def _add_nav_bar(win, on_previous, on_next, has_previous, has_next, position_tex
         win.bind("<Right>", lambda _e: on_next(win))
 
 
+def _effort_result(bars: pd.DataFrame, bar_sec: float) -> pd.Series:
+    """Effort (net aggressive delta) vs result (price move) over a rolling window.
+
+    Both are divided by their own rolling std, so the output is in "sigmas":
+      > 0  price moved MORE than the flow explains (easy move / opposite side absorbed -> bullish)
+      < 0  price moved LESS (or opposite) than the flow explains (effort absorbed -> bearish)
+    Strongly negative while delta is positive = buyers are being absorbed;
+    strongly positive while delta is negative = sellers are being absorbed.
+    """
+    n = max(1, round(config.EFFORT_WINDOW_SEC / bar_sec))
+    norm = max(n * 2, round(config.EFFORT_NORM_SEC / bar_sec))
+    delta = bars["Delta"].rolling(n, min_periods=1).sum()
+    move = bars["Close"] - bars["Close"].shift(n).fillna(bars["Open"].iloc[0])
+    z_delta = delta / delta.rolling(norm, min_periods=n).std().replace(0, np.nan)
+    z_move = move / move.rolling(norm, min_periods=n).std().replace(0, np.nan)
+    return (z_move - z_delta).clip(-4, 4).fillna(0.0)
+
+
 def _flow_summary_lines(bars: pd.DataFrame, trade: pd.Series, bar_sec: float):
     entry = pd.Timestamp(trade["EntryDT"])
     entry_bar = entry.floor(pd.Timedelta(seconds=bar_sec))
@@ -793,6 +811,8 @@ def _flow_summary_lines(bars: pd.DataFrame, trade: pd.Series, bar_sec: float):
     if w30["BearL"].any(): flags.append("distribution (60s)")
     flags_text = ", ".join(flags) if flags else "none"
 
+    if not config.SHOW_FLOW_TEXT:
+        return []
     return [
         f"Delta before entry:  10s {d10:+,.0f}   30s {d30:+,.0f}   60s {d60:+,.0f}   "
         f"-> 30s flow is {verdict} your {trade['Side']}",
@@ -806,6 +826,7 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
                      has_previous: bool = False, has_next: bool = False,
                      position_text: str = "", group: pd.DataFrame | None = None):
     bar_sec = float((bars["DateTime"].iloc[1] - bars["DateTime"].iloc[0]).total_seconds())
+    bars = bars.assign(EffortResult=_effort_result(bars, bar_sec))
     v = bars[(bars["DateTime"] >= view_start) & (bars["DateTime"] < view_end)].reset_index(drop=True)
     if v.empty:
         messagebox.showerror("Chart error", "No tick data in the selected window.", parent=parent)
@@ -838,12 +859,13 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     _add_nav_bar(win, on_previous, on_next, has_previous, has_next, position_text)
 
     fig = Figure(figsize=(14, 9.5), dpi=config.FIG_DPI)
-    gs = fig.add_gridspec(5, 1, height_ratios=[5.0, 1.5, 1.4, 1.6, 0.8], hspace=0.04)
+    gs = fig.add_gridspec(6, 1, height_ratios=[9.0, 1.0, 1.0, 1.0, 1.0, 0.6], hspace=0.04)
     ax = fig.add_subplot(gs[0])
     axv = fig.add_subplot(gs[1], sharex=ax)
     axd = fig.add_subplot(gs[2], sharex=ax)
     axc = fig.add_subplot(gs[3], sharex=ax)
-    axi = fig.add_subplot(gs[4])
+    axe = fig.add_subplot(gs[4], sharex=ax)
+    axi = fig.add_subplot(gs[5])
     axi.axis("off")
 
     n = len(v)
@@ -862,16 +884,17 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
                                facecolor="white" if c >= o else "black",
                                edgecolor="black", linewidth=0.5, zorder=3))
 
-    for s, e in _runs(v["BullS"].values):
-        for a in (ax, axv):
-            a.axvspan(s, e, color="#0891b2", alpha=0.13, zorder=0)
-    for s, e in _runs(v["BearS"].values):
-        for a in (ax, axv):
-            a.axvspan(s, e, color="#c026d3", alpha=0.13, zorder=0)
-    for s, e in _runs(v["BullL"].values):
-        ax.axvspan(s, e, ymin=0.95, ymax=1.0, color="#0891b2", alpha=0.55, zorder=1)
-    for s, e in _runs(v["BearL"].values):
-        ax.axvspan(s, e, ymin=0.95, ymax=1.0, color="#c026d3", alpha=0.55, zorder=1)
+    if config.SHOW_ABSORPTION_BANDS:
+        for s, e in _runs(v["BullS"].values):
+            for a in (ax, axv):
+                a.axvspan(s, e, color="#0891b2", alpha=0.13, zorder=0)
+        for s, e in _runs(v["BearS"].values):
+            for a in (ax, axv):
+                a.axvspan(s, e, color="#c026d3", alpha=0.13, zorder=0)
+        for s, e in _runs(v["BullL"].values):
+            ax.axvspan(s, e, ymin=0.95, ymax=1.0, color="#0891b2", alpha=0.55, zorder=1)
+        for s, e in _runs(v["BearL"].values):
+            ax.axvspan(s, e, ymin=0.95, ymax=1.0, color="#c026d3", alpha=0.55, zorder=1)
 
     entry_color = "#15803d" if long_trade else "#b91c1c"
     ex = xpos(entry_dt)
@@ -924,12 +947,19 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     lo = min(float(v["Low"].min()), entry_px, float(exits["ExitPrice"].min()))
     hi = max(float(v["High"].max()), entry_px, float(exits["ExitPrice"].max()))
     pad = max(hi - lo, tick_size) * 0.08
-    ax.set_ylim(lo - pad, hi + pad)
+    ax.set_ylim(lo - pad - (hi - lo) * 0.22, hi + pad)  # room below candles for volume
     ax.set_ylabel("Price")
-    ax.legend(handles=[
-        Patch(color="#0891b2", alpha=0.4, label="Selling absorbed (bullish)"),
-        Patch(color="#c026d3", alpha=0.4, label="Buying absorbed (bearish)"),
-    ], loc="upper left", fontsize=8, framealpha=0.9)
+    if config.SHOW_ABSORPTION_BANDS:
+        ax.legend(handles=[
+            Patch(color="#0891b2", alpha=0.4, label="Selling absorbed (bullish)"),
+            Patch(color="#c026d3", alpha=0.4, label="Buying absorbed (bearish)"),
+        ], loc="upper left", fontsize=8, framealpha=0.9)
+
+    # Per-bar traded quantity along the bottom ~18% of the price panel.
+    axq = ax.twinx()
+    axq.bar(x, v["Qty"], width=0.85, color="#6b7280", alpha=0.45, zorder=0)
+    axq.set_ylim(0, max(float(v["Qty"].max()), 1.0) / 0.18)
+    axq.axis("off")
 
     axv.bar(x, v["BuyVol"], width=0.85, color="#15803d")
     axv.bar(x, -v["SellVol"], width=0.85, color="#b91c1c")
@@ -943,7 +973,14 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
     axc.plot(x, v["CumDelta"], color="#2563eb", linewidth=1.4)
     axc.set_ylabel("Cum delta", fontsize=8)
 
-    for a in (ax, axv, axd, axc):
+    axe.axhline(0, color="#374151", linewidth=0.6)
+    if config.SHOW_EFFORT_RESULT:
+        er = v["EffortResult"].values
+        axe.bar(x, er, width=0.85, color=np.where(er >= 0, "#15803d", "#b91c1c"))
+        axe.set_ylim(-4, 4)
+    axe.set_ylabel("Effort/Result", fontsize=8)
+
+    for a in (ax, axv, axd, axc, axe):
         a.axvline(ex, color=entry_color, linewidth=1.0, linestyle=":")
         for xx in exit_xs:
             a.axvline(xx, color="#111827", linewidth=0.7, linestyle=":")
@@ -953,13 +990,13 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
         a.margins(x=0.005)
         a.tick_params(axis="y", labelsize=8)
 
-    for a in (ax, axv, axd):
+    for a in (ax, axv, axd, axc):
         a.tick_params(labelbottom=False)
 
     step = max(1, int(round(15 / bar_sec)))
     ticks = list(range(0, n, step))
-    axc.set_xticks([t + 0.5 for t in ticks])
-    axc.set_xticklabels([v.iloc[t]["DateTime"].strftime("%H:%M:%S") for t in ticks], fontsize=8)
+    axe.set_xticks([t + 0.5 for t in ticks])
+    axe.set_xticklabels([v.iloc[t]["DateTime"].strftime("%H:%M:%S") for t in ticks], fontsize=8)
 
     result_word = "WIN" if total_pl > 0 else "LOSS" if total_pl < 0 else "FLAT"
     hold_sec = (last_exit - entry_dt).total_seconds()
@@ -980,7 +1017,8 @@ def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, v
             f"Contracts: {n_legs}   wins {wins_n}   losses {loss_n}   "
             f"best R$ {legs['PL'].max():.2f}   worst R$ {legs['PL'].min():.2f}"
         )
-    axi.text(0.01, 0.40, "\n".join(lines), va="center", ha="left", fontsize=9.5, transform=axi.transAxes)
+    if lines:
+        axi.text(0.01, 0.40, "\n".join(lines), va="center", ha="left", fontsize=9.5, transform=axi.transAxes)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.05)
     canvas = FigureCanvasTkAgg(fig, master=win)
