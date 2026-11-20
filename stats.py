@@ -1,3 +1,5 @@
+"""Generate text-based statistical summaries and performance reports for trade results and process reviews."""
+
 from __future__ import annotations
 
 import numpy as np

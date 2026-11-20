@@ -1,3 +1,5 @@
+"""Convert tick-level CSV exports into cached Parquet data and aggregate them into market bars."""
+
 from __future__ import annotations
 
 import hashlib

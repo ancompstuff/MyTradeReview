@@ -1,3 +1,5 @@
+"""Load trade exports and market data, normalize fields, calculate indicators, and calculate trade P/L."""
+
 from __future__ import annotations
 
 import hashlib

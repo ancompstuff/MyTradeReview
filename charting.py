@@ -1,3 +1,5 @@
+"""Create and open trade, day, and scalp-chart visualizations using Matplotlib and Tkinter."""
+
 from __future__ import annotations
 
 import math

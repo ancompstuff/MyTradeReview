@@ -1,3 +1,5 @@
+"""Persist process-review grades, setup labels, mistake tags, notes, and timestamps for individual trades."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,3 +1,5 @@
+"""Present file-selection dialogs and remember the user's previous trades and market inputs."""
+
 from __future__ import annotations
 
 import json

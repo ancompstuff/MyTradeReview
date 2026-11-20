@@ -1,3 +1,5 @@
+"""Main Tkinter application for loading trades, filtering results, reviewing process, and opening charts."""
+
 from __future__ import annotations
 
 import warnings

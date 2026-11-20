@@ -1,3 +1,5 @@
+"""Central application settings, file locations, chart parameters, and process-review values."""
+
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent

@@ -1,3 +1,5 @@
+"""Export generated trade charts as monthly or combined PDF reports."""
+
 from __future__ import annotations
 
 from pathlib import Path
