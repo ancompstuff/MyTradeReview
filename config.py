@@ -1,3 +1,5 @@
+"""Define application file paths and shared trade-review and chart settings."""
+
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent

@@ -1,3 +1,5 @@
+"""Parse broker trade and 1-minute market CSV exports into prepared data."""
+
 from __future__ import annotations
 
 import hashlib

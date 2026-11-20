@@ -1,3 +1,5 @@
+"""Run the Tkinter trade-review app for browsing, reviewing, and charting trades."""
+
 from __future__ import annotations
 
 import warnings
