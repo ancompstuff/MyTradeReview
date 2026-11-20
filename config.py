@@ -80,7 +80,7 @@ ABS_VOL_QUANTILE = 0.90            # "heavy" = top 10% of rolling volume
 ABS_DOMINANCE = 1.3                # heavy side must exceed the other side by 30%
 # Scalp chart display toggles
 SHOW_FLOW_TEXT = False             # print "Delta before entry" / "Cum delta at entry" lines
-SHOW_ABSORPTION_BANDS = True       # coloured absorption bands on the scalp chart
+SHOW_ABSORPTION_BANDS = False       # coloured absorption bands on the scalp chart
 SHOW_EFFORT_RESULT = True          # effort-vs-result panel on the scalp chart
 EFFORT_WINDOW_SEC = 10             # rolling window for effort-vs-result
 EFFORT_NORM_SEC = 300              # lookback used to normalise delta and price move
