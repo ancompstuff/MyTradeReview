@@ -1,3 +1,5 @@
+"""Create per-trade charts with market context and trade-management metrics."""
+
 from __future__ import annotations
 
 import math
