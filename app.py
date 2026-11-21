@@ -16,8 +16,9 @@ warnings.filterwarnings(
 )
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -51,6 +52,7 @@ class TradeReviewApp(tk.Tk):
         self.current_trades_file = None
         self.current_market_file = None
         self.tick_parquet = None
+        self.reviews_file = config.REVIEWS_FILE
 
         self._build_ui()
         self.after(100, self.load_data)
@@ -65,6 +67,7 @@ class TradeReviewApp(tk.Tk):
         ttk.Button(top, text="Show stats", command=self.show_stats).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Open selected chart", command=self.open_selected_chart).pack(side=tk.RIGHT, padx=3)
         ttk.Button(top, text="Open day chart", command=self.open_day_chart).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(top, text="Export day PDF", command=self.export_day_pdf).pack(side=tk.RIGHT, padx=3)
 
         filters = ttk.Frame(self, padding=(8, 2, 8, 8))
         filters.pack(fill=tk.X)
@@ -177,7 +180,8 @@ class TradeReviewApp(tk.Tk):
             self.status_var.set("Load cancelled.")
             return
 
-        trades_file, market_choice, data_file, source = choice
+        trades_file, market_choice, data_file, source, reviews_file = choice
+        self.reviews_file = reviews_file
 
         try:
             self.tick_parquet = None
@@ -206,7 +210,7 @@ class TradeReviewApp(tk.Tk):
             )
 
             self.markets = markets
-            self.reviews = load_reviews(config.REVIEWS_FILE)
+            self.reviews = load_reviews(self.reviews_file)
             self.trades = merge_reviews(trades, self.reviews)
 
             self._refresh_instrument_filter_values()
@@ -429,6 +433,57 @@ class TradeReviewApp(tk.Tk):
         elif self.day_var.get() not in values:
             self.day_var.set(values[-1])
 
+    def export_day_pdf(self):
+        day_text = self.day_var.get()
+        values = self._day_values()
+        if not day_text or day_text not in values:
+            messagebox.showinfo("Select a day", "Choose a day in the Day dropdown first.")
+            return
+
+        session_date = datetime.strptime(day_text, "%d/%m/%Y").date()
+        default_name = f"{session_date:%Y-%m-%d} - Daily Review.pdf"
+        from file_picker import _load_last, _save_last
+        last = _load_last()
+        last_pdf_dir = last.get("pdf_output_dir", str(config.OUTPUT_DIR))
+        pdf_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save daily trade review PDF",
+            initialdir=last_pdf_dir,
+            initialfile=default_name,
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+        )
+        if not pdf_path:
+            return
+        chosen_dir = str(Path(pdf_path).resolve().parent)
+        _save_last({**last, "pdf_output_dir": chosen_dir})
+
+        day_trades = self.trades[self.trades["Date"] == session_date].copy()
+        if day_trades.empty:
+            messagebox.showinfo("No trades", f"No trades on {day_text}.")
+            return
+
+        try:
+            from pdf_export import generate_daily_trade_pdf
+
+            result, problems = generate_daily_trade_pdf(
+                day_trades,
+                self.markets,
+                pdf_path,
+                tick_parquet=self.tick_parquet,
+                status_callback=lambda message: self.status_var.set(message),
+            )
+            if problems:
+                messagebox.showwarning(
+                    "PDF created with warnings",
+                    f"Saved: {result}\n\n{len(problems)} issue(s):\n" + "\n".join(problems[:10]),
+                )
+            else:
+                messagebox.showinfo("PDF created", f"Saved: {result}")
+        except Exception as exc:
+            messagebox.showerror("Could not create PDF", str(exc))
+            self.status_var.set("PDF export failed.")
+
     def open_day_chart(self, day_text=None):
         values = self._day_values()
         day_text = day_text or self.day_var.get()
@@ -476,14 +531,14 @@ class TradeReviewApp(tk.Tk):
             messagebox.showinfo("Select a trade", "Select a trade before saving a review.")
             return
         save_review(
-            config.REVIEWS_FILE,
+            self.reviews_file,
             trade.trade_id,
             self.grade_var.get(),
             self.setup_var.get(),
             self.tag_var.get(),
             self.notes.get("1.0", tk.END).strip(),
         )
-        self.reviews = load_reviews(config.REVIEWS_FILE)
+        self.reviews = load_reviews(self.reviews_file)
         base_cols = [c for c in self.trades.columns if c not in ["process_grade", "setup", "mistake_tag", "notes", "updated_at"]]
         base = self.trades[base_cols].copy()
         self.trades = merge_reviews(base, self.reviews)

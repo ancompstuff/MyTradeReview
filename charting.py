@@ -560,6 +560,122 @@ def _prepare_day(market: pd.DataFrame, session_date) -> pd.DataFrame:
     return day
 
 
+def create_day_figure(market: pd.DataFrame, trades_day: pd.DataFrame, session_date):
+    """Build the full-day overview chart without creating a Tkinter window."""
+    day = _prepare_day(market, session_date)
+    trades_day = trades_day.sort_values("EntryDT").reset_index(drop=True)
+    root = trades_day.iloc[0]["Root"]
+
+    fig = Figure(figsize=(11.69, 8.27), dpi=FIG_DPI)
+    gs = fig.add_gridspec(6, 1, height_ratios=[9.0, 1.0, 1.0, 1.0, 0.5, 0.9], hspace=0.04)
+    ax = fig.add_subplot(gs[0])
+    axr = fig.add_subplot(gs[1], sharex=ax)
+    axv = fig.add_subplot(gs[2], sharex=ax)
+    axp = fig.add_subplot(gs[3], sharex=ax)
+    axi = fig.add_subplot(gs[5])
+    axi.axis("off")
+
+    n = len(day)
+    x = np.arange(n)
+    candle_width = 0.66
+    ax.vlines(x, day["Low"], day["High"], color="black", linewidth=0.7, zorder=2)
+    price_span = max(day["High"].max() - day["Low"].min(), 1.0)
+    min_body = price_span * 0.00035
+    for i, row in day.iterrows():
+        o, c = row["Open"], row["Close"]
+        ax.add_patch(Rectangle((i - candle_width / 2, min(o, c)), candle_width,
+                               max(abs(c - o), min_body), facecolor="white" if c >= o else "black",
+                               edgecolor="black", linewidth=0.6, zorder=3))
+
+    ax.plot(x, day["MA9"], linewidth=1.1, label="MA 9", color="#d97706")
+    ax.plot(x, day["MA20"], linewidth=1.1, label="MA 20", color="#2563eb")
+    ax.plot(x, day["MA80"], linewidth=1.1, label="MA 80", color="#111827")
+    ax.plot(x, day["VWAP"], linewidth=1.8, label="Daily VWAP", color="yellow")
+    ax.plot(x, day["DayHighKnown"], linewidth=0.9, label="Day high", color="#15803d")
+    ax.plot(x, day["DayLowKnown"], linewidth=0.9, label="Day low", color="#991b1b")
+
+    if day["PrevHigh"].dropna().size:
+        ax.axhline(day["PrevHigh"].dropna().iloc[0], linestyle="--", linewidth=1.0,
+                   color="#7e22ce", label="Prev session H/L")
+    if day["PrevLow"].dropna().size:
+        ax.axhline(day["PrevLow"].dropna().iloc[0], linestyle="--", linewidth=1.0, color="#7e22ce")
+
+    cum = 0.0
+    cum_x = [0.0]
+    cum_y = [0.0]
+    for k, trade in trades_day.iterrows():
+        ex = _fractional_x(day, trade["EntryDT"])
+        xx = _fractional_x(day, trade["ExitDT"])
+        pl = float(trade["PL"] if pd.notna(trade["PL"]) else 0.0)
+        color = "#15803d" if pl > 0 else "#b91c1c" if pl < 0 else "#6b7280"
+        long_trade = trade["Side"] == "LONG"
+        ax.axvspan(ex, max(xx, ex + 0.3), color=color, alpha=0.07, zorder=0)
+        ax.plot([ex, xx], [trade["EntryPrice"], trade["ExitPrice"]], color=color, linewidth=1.8, zorder=5)
+        ax.scatter([ex], [trade["EntryPrice"]], s=70, marker="^" if long_trade else "v",
+                   color=color, edgecolor="black", linewidth=0.5, zorder=6)
+        ax.scatter([xx], [trade["ExitPrice"]], s=55, marker="X",
+                   color="#111827", edgecolor="white", linewidth=0.5, zorder=6)
+        offset = 12 if long_trade else -14
+        ax.annotate(f"#{k + 1}  {pl:+.0f}", xy=(ex, trade["EntryPrice"]),
+                    xytext=(0, offset), textcoords="offset points", ha="center",
+                    va="bottom" if long_trade else "top", fontsize=7.5, color=color,
+                    fontweight="bold", bbox=dict(boxstyle="round,pad=0.12", fc="white", ec=color, alpha=0.85), zorder=7)
+        cum += pl
+        cum_x.append(xx)
+        cum_y.append(cum)
+
+    low = float(day["Low"].min())
+    high = float(day["High"].max())
+    pad = max(high - low, 1.0) * 0.05
+    ax.set_ylim(low - pad, high + pad)
+    ax.set_ylabel("Price")
+    ax.legend(loc="upper left", fontsize=8, ncol=4, framealpha=0.9)
+
+    axr.plot(x, day["RSI14"], linewidth=1.0, color="#7c3aed")
+    axr.axhline(70, color="#b91c1c", linewidth=0.8, linestyle="--")
+    axr.axhline(30, color="#15803d", linewidth=0.8, linestyle="--")
+    axr.set_ylim(0, 100)
+    axr.set_ylabel("RSI", fontsize=8)
+    axv.bar(x, day["Quantity"].fillna(0), width=0.66, color="#6b7280", align="center")
+    axv.set_ylabel("Qty")
+
+    cum_x.append(float(n - 1))
+    cum_y.append(cum)
+    axp.step(cum_x, cum_y, where="post", color="#2563eb", linewidth=1.5)
+    axp.axhline(0, color="#374151", linewidth=0.8)
+    axp.fill_between(cum_x, cum_y, 0, step="post", alpha=0.12,
+                     color="#15803d" if cum >= 0 else "#b91c1c")
+    axp.set_ylabel("Cum P/L R$", fontsize=8)
+
+    step = max(1, math.ceil(n / 14))
+    ticks = list(range(0, n, step))
+    if n - 1 not in ticks:
+        ticks.append(n - 1)
+    labels = [day.iloc[i]["DateTime"].strftime("%H:%M") for i in ticks]
+    axp.set_xticks(ticks)
+    axp.set_xticklabels(labels, fontsize=8)
+    for a in (axr, ax, axv):
+        a.tick_params(labelbottom=False)
+    for a in (axr, ax, axv, axp):
+        a.set_axisbelow(True)
+        a.grid(True, axis="y", alpha=0.18)
+        a.grid(True, axis="x", alpha=0.11)
+        a.margins(x=0.01)
+
+    net = float(trades_day["PL"].sum())
+    wins = int((trades_day["PL"] > 0).sum())
+    losses = int((trades_day["PL"] < 0).sum())
+    fig.suptitle(f"{session_date:%A %d/%m/%Y}   {len(trades_day)} trades   Net R$ {net:.2f}   ({wins}W / {losses}L)",
+                 x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985)
+    axi.text(0.01, 0.55,
+             f"Best trade: R$ {float(trades_day['PL'].max()):.2f}     "
+             f"Worst trade: R$ {float(trades_day['PL'].min()):.2f}     "
+             f"Day high: {_price_fmt(root, high)}     Day low: {_price_fmt(root, low)}",
+             va="center", ha="left", fontsize=9.2, transform=axi.transAxes)
+    fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.05, hspace=0.10)
+    return fig
+
+
 def open_day_chart(parent, market: pd.DataFrame, trades_day: pd.DataFrame, session_date,
                    on_previous=None, on_next=None,
                    has_previous: bool = False, has_next: bool = False,
@@ -821,6 +937,133 @@ def _flow_summary_lines(bars: pd.DataFrame, trade: pd.Series, bar_sec: float):
         f"Cum delta at entry: {float(before['CumDelta'].iloc[-1]):+,.0f}     "
         f"Tape pace (30s): x{pace:.1f} of average     Absorption in last 30s: {flags_text}",
     ]
+
+
+def create_scalp_figure(trade: pd.Series, bars: pd.DataFrame, view_start, view_end,
+                        tick_size: float, group: pd.DataFrame | None = None):
+    """Build a grouped scalp trade chart without creating a Tkinter window."""
+    bar_sec = float((bars["DateTime"].iloc[1] - bars["DateTime"].iloc[0]).total_seconds())
+    bars = bars.assign(EffortResult=_effort_result(bars, bar_sec))
+    v = bars[(bars["DateTime"] >= view_start) & (bars["DateTime"] < view_end)].reset_index(drop=True)
+    if v.empty:
+        raise ValueError("No tick data in the selected trade window.")
+
+    legs = group.copy() if group is not None and len(group) > 0 else pd.DataFrame([trade])
+    legs["PL"] = pd.to_numeric(legs["PL"], errors="coerce").fillna(0.0)
+    legs = legs.sort_values("ExitDT").reset_index(drop=True)
+
+    root = trade["Root"]
+    side = trade["Side"]
+    long_trade = side == "LONG"
+    entry_dt = pd.Timestamp(legs["EntryDT"].min())
+    entry_px = float(legs["EntryPrice"].iloc[0])
+    last_exit = pd.Timestamp(legs["ExitDT"].max())
+    n_legs = len(legs)
+    total_pl = float(legs["PL"].sum())
+
+    legs["_sec"] = legs["ExitDT"].dt.floor("s")
+    exits = (legs.groupby(["_sec", "ExitPrice"], sort=False)
+             .agg(n=("PL", "size"), pl=("PL", "sum"), first=("ExitDT", "min"))
+             .reset_index().sort_values("first").reset_index(drop=True))
+
+    fig = Figure(figsize=FIGSIZE, dpi=config.FIG_DPI)
+    gs = fig.add_gridspec(6, 1, height_ratios=[9.0, 1.0, 1.0, 1.0, 1.0, 0.6], hspace=0.04)
+    ax = fig.add_subplot(gs[0])
+    axv = fig.add_subplot(gs[1], sharex=ax)
+    axd = fig.add_subplot(gs[2], sharex=ax)
+    axc = fig.add_subplot(gs[3], sharex=ax)
+    axe = fig.add_subplot(gs[4], sharex=ax)
+    axi = fig.add_subplot(gs[5])
+    axi.axis("off")
+
+    n = len(v)
+    x = np.arange(n) + 0.5
+
+    def xpos(dt):
+        return (pd.Timestamp(dt) - view_start).total_seconds() / bar_sec
+
+    span = max(v["High"].max() - v["Low"].min(), tick_size)
+    min_body = max(span * 0.002, tick_size * 0.15)
+    w = 0.7
+    ax.vlines(x, v["Low"], v["High"], color="black", linewidth=0.7, zorder=2)
+    for i in range(n):
+        o, c = v.at[i, "Open"], v.at[i, "Close"]
+        ax.add_patch(Rectangle((x[i] - w / 2, min(o, c)), w, max(abs(c - o), min_body),
+                               facecolor="white" if c >= o else "black",
+                               edgecolor="black", linewidth=0.5, zorder=3))
+
+    if config.SHOW_ABSORPTION_BANDS:
+        for s, e in _runs(v["BullS"].values):
+            for a in (ax, axv):
+                a.axvspan(s, e, color="#0891b2", alpha=0.13, zorder=0)
+        for s, e in _runs(v["BearS"].values):
+            for a in (ax, axv):
+                a.axvspan(s, e, color="#c026d3", alpha=0.13, zorder=0)
+
+    entry_color = "#15803d" if long_trade else "#b91c1c"
+    ex = xpos(entry_dt)
+    exit_xs = []
+    for k, exit_row in exits.iterrows():
+        xx = xpos(exit_row["first"])
+        exit_xs.append(xx)
+        pl = float(exit_row["pl"])
+        col = "#15803d" if pl > 0 else "#b91c1c" if pl < 0 else "#6b7280"
+        px = float(exit_row["ExitPrice"])
+        ax.plot([ex, xx], [entry_px, px], color=col, linewidth=1.8, zorder=5)
+        ax.scatter([xx], [px], s=75, marker="X", color="#111827", edgecolor="white", linewidth=0.6, zorder=6)
+
+    ax.scatter([ex], [entry_px], s=130, marker="^" if long_trade else "v",
+               color=entry_color, edgecolor="black", linewidth=0.7, zorder=7)
+
+    lo = min(float(v["Low"].min()), entry_px, float(exits["ExitPrice"].min()))
+    hi = max(float(v["High"].max()), entry_px, float(exits["ExitPrice"].max()))
+    pad = max(hi - lo, tick_size) * 0.08
+    ax.set_ylim(lo - pad - (hi - lo) * 0.22, hi + pad)
+    ax.set_ylabel("Price")
+
+    axq = ax.twinx()
+    axq.bar(x, v["Qty"], width=0.85, color="#6b7280", alpha=0.45, zorder=0)
+    axq.set_ylim(0, max(float(v["Qty"].max()), 1.0) / 0.18)
+    axq.axis("off")
+    axv.bar(x, v["BuyVol"], width=0.85, color="#15803d")
+    axv.bar(x, -v["SellVol"], width=0.85, color="#b91c1c")
+    axv.axhline(0, color="#374151", linewidth=0.6)
+    axv.set_ylabel("Aggr vol", fontsize=8)
+    axd.bar(x, v["Delta"], width=0.85, color=np.where(v["Delta"] >= 0, "#15803d", "#b91c1c"))
+    axd.axhline(0, color="#374151", linewidth=0.6)
+    axd.set_ylabel("Delta", fontsize=8)
+    axc.plot(x, v["CumDelta"], color="#2563eb", linewidth=1.0)
+    axc.axhline(0, color="#374151", linewidth=0.6)
+    axc.set_ylabel("Cum delta", fontsize=8)
+    axe.plot(x, v["EffortResult"], color="#111827", linewidth=1.0)
+    axe.axhline(0, color="#374151", linewidth=0.6)
+    axe.axhspan(-4, -1.0, color="#b91c1c", alpha=0.08)
+    axe.axhspan(1.0, 4, color="#15803d", alpha=0.08)
+    axe.set_ylim(-4, 4)
+    axe.set_ylabel("Effort/Result", fontsize=8)
+
+    for a in (ax, axv, axd, axc, axe):
+        a.axvline(ex, color=entry_color, linewidth=1.0, linestyle=":")
+        for xx in exit_xs:
+            a.axvline(xx, color="#111827", linewidth=0.7, linestyle=":")
+        a.set_axisbelow(True)
+        a.grid(True, axis="y", alpha=0.18)
+        a.grid(True, axis="x", alpha=0.11)
+        a.margins(x=0.005)
+        a.tick_params(axis="y", labelsize=8)
+    for a in (ax, axv, axd, axc):
+        a.tick_params(labelbottom=False)
+
+    step = max(1, int(round(15 / bar_sec)))
+    ticks = list(range(0, n, step))
+    axe.set_xticks([t + 0.5 for t in ticks])
+    axe.set_xticklabels([v.iloc[t]["DateTime"].strftime("%H:%M:%S") for t in ticks], fontsize=8)
+
+    result_word = "WIN" if total_pl > 0 else "LOSS" if total_pl < 0 else "FLAT"
+    fig.suptitle(f"{trade['Ativo']}  {entry_dt:%d/%m/%Y}   {side}   Qty {n_legs}   P/L R$ {total_pl:.2f} ({result_word})",
+                 x=0.07, ha="left", fontsize=12, fontweight="bold", y=0.985)
+    fig.subplots_adjust(left=0.07, right=0.985, top=0.955, bottom=0.05)
+    return fig
 
 
 def open_scalp_chart(parent, trade: pd.Series, bars: pd.DataFrame, view_start, view_end,

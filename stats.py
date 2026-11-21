@@ -93,3 +93,19 @@ def make_stats_report(df: pd.DataFrame) -> str:
     lines.append("")
     lines.append("Interpretation rule: do not call a trade 'good' only because it won, or 'bad' only because it lost. Use the process grades and chart context to separate decision quality from outcome luck.")
     return "\n".join(lines)
+
+
+def create_stats_figure(df: pd.DataFrame, title: str = "Trade statistics"):
+    """Render a trade statistics report as an A4-landscape Matplotlib page."""
+    import matplotlib.pyplot as plt
+
+    report = make_stats_report(df)
+    report_safe = report.replace("$", r"\$")
+    fig = plt.figure(figsize=(11.69, 8.27), dpi=100)
+    ax = fig.add_subplot(111)
+    ax.axis("off")
+    fig.suptitle(title, x=0.06, y=0.97, ha="left", fontsize=14, fontweight="bold")
+    ax.text(0.02, 0.94, report_safe, va="top", ha="left", family="monospace",
+            fontsize=7.5, linespacing=1.25, transform=ax.transAxes)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.03)
+    return fig

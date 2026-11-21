@@ -39,11 +39,13 @@ def ask_for_files(parent):
     frame.pack(fill=tk.BOTH, expand=True)
 
     choice0 = last.get("market_choice", config.DEFAULT_MARKET_CHOICE)
+    reviews_var = tk.StringVar(value=last.get("reviews_file", str(config.REVIEWS_FILE)))
     trades_var = tk.StringVar(value=last.get("trades_file", str(config.DEFAULT_TRADES_FILE)))
     market_var = tk.StringVar(value=choice0)
     source_var = tk.StringVar(value=last.get("source", "minute"))
     minute_var = tk.StringVar(value=last.get("market_file", str(config.DEFAULT_MARKET_FILES[choice0])))
     tick_var = tk.StringVar(value=last.get("tick_file", ""))
+    pdf_output_var = tk.StringVar(value=last.get("pdf_output_dir", str(config.OUTPUT_DIR)))
 
     def start_dir(value: str, fallback: Path) -> str:
         p = Path(value) if value else fallback
@@ -88,6 +90,25 @@ def ask_for_files(parent):
         tick_var, "Select tick file (Scalper Pro)", config.DEFAULT_MARKET_DIR))
     tick_btn.grid(row=4, column=2)
 
+    ttk.Label(frame, text="Trade reviews CSV:").grid(row=5, column=0, sticky="w", pady=(8, 0))
+    ttk.Entry(frame, textvariable=reviews_var, width=72).grid(row=5, column=1, padx=8, pady=(8, 0))
+
+    def browse_reviews():
+        initial = Path(reviews_var.get()).expanduser()
+        initial_dir = str(initial.parent if initial.suffix else initial)
+        f = filedialog.asksaveasfilename(
+            parent=top,
+            title="Select trade reviews CSV location",
+            initialdir=initial_dir,
+            initialfile=initial.name if initial.name else "trade_reviews.csv",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if f:
+            reviews_var.set(f)
+
+    ttk.Button(frame, text="Browse...", command=browse_reviews).grid(row=5, column=2, pady=(8, 0))
+
     def toggle(*_a):
         tick = source_var.get() == "tick"
         for w in (minute_entry, minute_btn):
@@ -105,6 +126,9 @@ def ask_for_files(parent):
 
     market_var.trace_add("write", on_market_change)
 
+    ttk.Label(frame, text="PDF output folder:").grid(row=6, column=0, sticky="w", pady=(8, 0))
+    ttk.Entry(frame, textvariable=pdf_output_var, width=72, state="readonly").grid(row=6, column=1, padx=8, pady=(8, 0))
+
     result = {"value": None}
 
     def on_ok():
@@ -117,15 +141,20 @@ def ask_for_files(parent):
         if not data.is_file():
             messagebox.showerror("Data file missing", f"Not found:\n{data}", parent=top)
             return
+        reviews_file = Path(reviews_var.get()).expanduser()
+        if reviews_file.suffix.lower() != ".csv":
+            messagebox.showerror("Invalid reviews file", "Trade reviews file must end with .csv", parent=top)
+            return
         _save_last({
             "trades_file": str(trades), "market_choice": market_var.get(), "source": source,
             "market_file": minute_var.get(), "tick_file": tick_var.get(),
+            "reviews_file": str(reviews_file),
         })
-        result["value"] = (trades, market_var.get(), data, source)
+        result["value"] = (trades, market_var.get(), data, source, reviews_file)
         top.destroy()
 
     btns = ttk.Frame(frame)
-    btns.grid(row=5, column=0, columnspan=3, sticky="e", pady=(12, 0))
+    btns.grid(row=7, column=0, columnspan=3, sticky="e", pady=(12, 0))
     ttk.Button(btns, text="Cancel", command=top.destroy).pack(side=tk.RIGHT)
     ttk.Button(btns, text="Load", command=on_ok).pack(side=tk.RIGHT, padx=(0, 6))
     top.bind("<Return>", lambda _e: on_ok())

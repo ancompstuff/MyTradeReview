@@ -93,3 +93,105 @@ def generate_trade_pdfs(
         status_callback(f"Finished: {len(results)} PDF(s) created in {pdf_dir}")
 
     return results, problems
+
+
+def generate_daily_trade_pdf(
+    day_trades: pd.DataFrame,
+    markets: dict[str, pd.DataFrame],
+    pdf_path: str | Path,
+    tick_parquet: Path | None = None,
+    status_callback=None,
+) -> tuple[Path, list[str]]:
+    """Write a day overview, statistics page, and individual trade plots to one A4 PDF."""
+    import tick_loader
+    import config
+    from charting import create_day_figure, create_trade_figure, create_scalp_figure
+    from stats import create_stats_figure
+
+    if day_trades is None or day_trades.empty:
+        raise ValueError("There are no trades for the selected day.")
+
+    output = Path(pdf_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    day_trades = day_trades.copy().sort_values("EntryDT").reset_index(drop=True)
+    session_date = pd.Timestamp(day_trades["EntryDT"].iloc[0]).date()
+    problems: list[str] = []
+    pages_written = 0
+
+    if status_callback:
+        status_callback("Creating daily overview page...")
+
+    with PdfPages(output) as pdf:
+        pdf.infodict()["Title"] = f"Daily Trade Review - {session_date:%d/%m/%Y}"
+        pdf.infodict()["Author"] = "MyTradeReview"
+
+        roots = day_trades["Root"].dropna().unique().tolist()
+        overview_market = next((markets.get(root) for root in roots if markets.get(root) is not None), None)
+        if overview_market is not None:
+            try:
+                fig = create_day_figure(overview_market, day_trades, session_date)
+                pdf.savefig(fig, orientation="landscape", bbox_inches="tight")
+                plt.close(fig)
+                pages_written += 1
+            except Exception as exc:
+                problems.append(f"Could not create day overview: {exc}")
+        else:
+            problems.append("Could not create day overview: no market data loaded.")
+
+        if status_callback:
+            status_callback("Creating statistics page...")
+        try:
+            fig = create_stats_figure(day_trades, f"Daily statistics - {session_date:%d/%m/%Y}")
+            pdf.savefig(fig, orientation="landscape", bbox_inches="tight")
+            plt.close(fig)
+            pages_written += 1
+        except Exception as exc:
+            problems.append(f"Could not create statistics page: {exc}")
+
+        if "PositionId" in day_trades.columns:
+            groups = []
+            for _, group in day_trades.groupby("PositionId", sort=False):
+                if group.empty:
+                    continue
+                groups.append(group.sort_values("ExitDT").reset_index(drop=True))
+        else:
+            groups = [day_trades.loc[[i]].copy() for i in range(len(day_trades))]
+
+        for index, group in enumerate(groups, start=1):
+            trade = group.iloc[0]
+            if status_callback:
+                status_callback(f"Creating individual trade page {index} of {len(groups)}...")
+
+            market = markets.get(trade["Root"])
+            if market is None or market.empty:
+                problems.append(f"Trade {trade['Ativo']} {trade['EntryDT']}: no market data loaded")
+                continue
+
+            try:
+                group_duration = max((group["ExitDT"].max() - trade["EntryDT"]).total_seconds(), 0.0)
+                fig = None
+                if tick_parquet is not None and group_duration <= config.SCALP_AUTO_MAX_SEC:
+                    tick_size = config.TICK_SIZE.get(trade["Root"], 0.01)
+                    span_trade = trade.copy()
+                    span_trade["ExitDT"] = group["ExitDT"].max()
+                    bars, view_start, view_end = tick_loader.prepare_scalp_bars(tick_parquet, span_trade, tick_size)
+                    fig = create_scalp_figure(trade, bars, view_start, view_end, tick_size, group=group)
+                else:
+                    fig = create_trade_figure(market, trade)
+
+                pdf.savefig(fig, orientation="landscape", bbox_inches="tight")
+                plt.close(fig)
+                pages_written += 1
+            except Exception as exc:
+                problems.append(f"Trade {trade['Ativo']} {trade['EntryDT']}: {exc}")
+
+    if pages_written == 0:
+        try:
+            output.unlink()
+        except FileNotFoundError:
+            pass
+        raise RuntimeError("No PDF pages could be created.")
+
+    if status_callback:
+        status_callback(f"Finished: PDF created at {output}")
+    return output, problems
